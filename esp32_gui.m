@@ -204,7 +204,7 @@ function esp32_gui()
         echo_cli('esp32 scan --bt');
         lblStatus.Text = 'Scanning Serial & Bluetooth SPP devices...';
         drawnow;
-        avail = esp32('scan', '--bt');
+        avail = esp32_cli('scan', '--bt');
         targetDrop.Items = unique(["192.168.4.1", "bt:ESP32_BT_BRIDGE", "COM9", "COM8", "COM5", avail], 'stable');
         lblStatus.Text = 'Scan complete. Select a target from the dropdown.';
     end
@@ -216,8 +216,8 @@ function esp32_gui()
         lblStatus.Text = sprintf('Connecting to %s...', t);
         drawnow;
         try
-            esp32('connect', t);
-            st = esp32('status');
+            esp32_cli('connect', t);
+            st = esp32_cli('status');
             lblStatus.Text = ['Connected: ' st];
             lblStatus.FontColor = [0.4 0.95 0.5];
             on_refresh_regs();
@@ -230,7 +230,7 @@ function esp32_gui()
     btnDisconnect.ButtonPushedFcn = @(~,~) on_disconnect();
     function on_disconnect()
         echo_cli('esp32 disconnect');
-        esp32('disconnect');
+        esp32_cli('disconnect');
         lblStatus.Text = 'Status: DISCONNECTED';
         lblStatus.FontColor = [0.9 0.7 0.3];
     end
@@ -238,7 +238,7 @@ function esp32_gui()
     btnLed2.ButtonPushedFcn = @(~,~) on_led2();
     function on_led2()
         echo_cli('esp32 pin 2 toggle');
-        st = esp32('pin', 2, 'toggle');
+        st = esp32_cli('pin', 2, 'toggle');
         lblStatus.Text = sprintf('GPIO 2 (LED) = %d', st);
     end
 
@@ -248,7 +248,7 @@ function esp32_gui()
         d = tblRegs.Data;
         for r = 1:size(d, 1)
             try
-                val = esp32('reg', d{r, 2});
+                val = esp32_cli('reg', d{r, 2});
                 d{r, 3} = sprintf('0x%08X', val);
                 raw = dec2bin(val, 32);
                 d{r, 4} = sprintf('%s_%s_%s_%s_%s_%s_%s_%s', ...
@@ -266,7 +266,7 @@ function esp32_gui()
         addrStr = tblRegs.Data{r, 2};
         newValStr = evt.NewData;
         echo_cli(sprintf('esp32 reg %s %s', addrStr, newValStr));
-        rb = esp32('reg', addrStr, newValStr);
+        rb = esp32_cli('reg', addrStr, newValStr);
         tblRegs.Data{r, 3} = sprintf('0x%08X', rb);
         on_refresh_regs();
     end
@@ -277,11 +277,11 @@ function esp32_gui()
         vStr = strtrim(edtCustomVal.Value);
         if isempty(vStr)
             echo_cli(sprintf('esp32 reg %s', aStr));
-            v = esp32('reg', aStr);
+            v = esp32_cli('reg', aStr);
             edtCustomVal.Value = sprintf('0x%08X', v);
         else
             echo_cli(sprintf('esp32 reg %s %s', aStr, vStr));
-            v = esp32('reg', aStr, vStr);
+            v = esp32_cli('reg', aStr, vStr);
             edtCustomVal.Value = sprintf('0x%08X', v);
             on_refresh_regs();
         end
@@ -289,7 +289,7 @@ function esp32_gui()
 
     function gpio_action(pinNum, act, lblHandle)
         echo_cli(sprintf('esp32 pin %d %s', pinNum, act));
-        st = esp32('pin', pinNum, act);
+        st = esp32_cli('pin', pinNum, act);
         lblHandle.Text = sprintf('State: %d', st);
     end
 
@@ -301,7 +301,7 @@ function esp32_gui()
         p = round(spnAdcPin.Value);
         echo_cli(sprintf('esp32 adc %d', p));
         for k = 1:nSamples
-            raw = esp32('adc', p);
+            raw = esp32_cli('adc', p);
             v = (double(raw) / 4095.0) * 3.3;
             sampleCount = sampleCount + 1;
             addpoints(lineObj, sampleCount, v);
@@ -339,7 +339,7 @@ function esp32_gui()
         bAddr = strtrim(edtDumpBase.Value);
         nW = round(spnDumpWords.Value);
         echo_cli(sprintf('esp32 dump %s %d', bAddr, nW));
-        vals = esp32('dump', bAddr, nW);
+        vals = esp32_cli('dump', bAddr, nW);
         base = uint32(hex2dec(regexprep(bAddr, '^0[xX]', '')));
         lines = strings(numel(vals)+2, 1);
         lines(1) = "Address     | Hexadecimal | Decimal    | Binary (31..0)";

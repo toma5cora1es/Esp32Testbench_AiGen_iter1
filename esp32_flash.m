@@ -7,7 +7,7 @@ function success = esp32_flash(filePath, varargin)
 %   esp32 flash C:\Users\tomas\build\app.bin --wifi 192.168.4.1
 %
 % OOP EXAMPLE:
-%   Esp32().Flash('C:\Users\tomas\persistent_app\persistent_app.ino')
+%   esp32_cli().Flash('C:\Users\tomas\persistent_app\persistent_app.ino')
 
     if nargin < 1 || isempty(filePath)
         error('ESP32:FlashPath', 'You must specify the path to the .ino file, sketch folder, or .bin file.');
