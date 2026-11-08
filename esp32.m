@@ -1,4 +1,4 @@
-classdef Esp32 < handle
+classdef esp32 < handle
 %ESP32 Lightweight Object-Oriented Facade over the esp32.m CLI engine and esp32_flash.m
 %   Usage examples:
 %     esp32_cli().Flash('C:\path\my_sketch.ino')
