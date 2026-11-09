@@ -1,15 +1,17 @@
 classdef esp32 < handle
-%ESP32 Lightweight Object-Oriented Facade over the esp32.m CLI engine and esp32_flash.m
+%ESP32 Lightweight Object-Oriented Facade over the esp32_cli.m engine and esp32_flash.m
 %   Usage examples:
-%     esp32_cli().Flash('C:\path\my_sketch.ino')
-%     dev = esp32_cli('192.168.4.1');          % Connect via Wi-Fi
-%     dev = esp32_cli('ESP32_BT_BRIDGE');      % Connect via Bluetooth SPP
-%     dev = esp32_cli('COM9');                 % Connect via USB Serial or BT Virtual COM
-%     dev.Pin(2, 'high');
-%     val = dev.Reg(0x3FF44004);
+%     esp32().Flash('C:\Users\tomas\MATLAB\esp32_workbench_v3\sketches\beep_fast\beep_fast.ino')
+%     dev = esp32('192.168.4.1');               % Connect via Wi-Fi
+%     dev = esp32('ESP32_BT_BRIDGE');           % Connect via Bluetooth SPP
+%     dev = esp32('COM8');                      % Connect via USB Serial
+%     dev.Pin(2, 'high');                       % Set GPIO 2 HIGH
+%     val = dev.Reg('GPIO_OUT_REG');            % Symbolic SFR read via esp32_sfr.json
+%     dev.Bits('GPIO_OUT_REG', 'GPIO2', 1);     % Symbolic bitfield write via esp32_sfr.json
+%     dev.Web();                                % Open on-chip Web Register Debugger in browser
 
     methods
-        function obj = esp32_cli(target, varargin)
+        function obj = esp32(target, varargin)
             if nargin >= 1 && ~isempty(target)
                 esp32_cli('connect', target, varargin{:});
             end
@@ -42,39 +44,84 @@ classdef esp32 < handle
         end
 
         function ok = Flash(~, pathToFile, varargin)
-            % Allows: esp32_cli().Flash('C:\path\sketch.ino') or esp32_cli().Flash(path, '--wifi')
+            % Allows: esp32().Flash('C:\path\sketch.ino') or esp32().Flash(path, '--wifi')
             ok = esp32_flash(pathToFile, varargin{:});
         end
 
-        function out = Reg(~, addr, varargin)
-            out = esp32_cli('reg', addr, varargin{:});
+        function out = Reg(~, nameOrAddr, varargin)
+            % Supports both hex address (0x3FF44004) and SFR name ('GPIO_OUT_REG')
+            if nargout > 0
+                out = esp32_cli('reg', nameOrAddr, varargin{:});
+            else
+                esp32_cli('reg', nameOrAddr, varargin{:});
+            end
         end
 
-        function out = Bits(~, addr, msb, lsb, varargin)
-            out = esp32_cli('bits', addr, msb, lsb, varargin{:});
+        function out = Bits(~, nameOrAddr, fieldOrMsb, varargin)
+            % Supports symbolic bitfield: dev.Bits('GPIO_OUT_REG', 'GPIO2', 1)
+            % or numeric range:           dev.Bits(0x3FF44004, 2, 2, 1)
+            if nargout > 0
+                out = esp32_cli('bits', nameOrAddr, fieldOrMsb, varargin{:});
+            else
+                esp32_cli('bits', nameOrAddr, fieldOrMsb, varargin{:});
+            end
+        end
+
+        function out = Sfr(~, varargin)
+            % Search or inspect registers in databases/esp32_sfr.json
+            if nargout > 0
+                out = esp32_cli('sfr', varargin{:});
+            else
+                esp32_cli('sfr', varargin{:});
+            end
         end
 
         function out = Pin(~, gpio, varargin)
-            out = esp32_cli('pin', gpio, varargin{:});
+            if nargout > 0
+                out = esp32_cli('pin', gpio, varargin{:});
+            else
+                esp32_cli('pin', gpio, varargin{:});
+            end
         end
 
         function out = Led(~, state)
             if nargin < 2, state = 'toggle'; end
-            out = esp32_cli('led', state);
+            if nargout > 0
+                out = esp32_cli('led', state);
+            else
+                esp32_cli('led', state);
+            end
         end
 
         function out = Adc(~, gpio)
-            out = esp32_cli('adc', gpio);
+            if nargout > 0
+                out = esp32_cli('adc', gpio);
+            else
+                esp32_cli('adc', gpio);
+            end
         end
 
         function out = Dump(~, baseAddr, count)
             if nargin < 2, baseAddr = 0x3FF44000; end
             if nargin < 3, count = 8; end
-            out = esp32_cli('dump', baseAddr, count);
+            if nargout > 0
+                out = esp32_cli('dump', baseAddr, count);
+            else
+                esp32_cli('dump', baseAddr, count);
+            end
         end
 
         function out = Status(~)
-            out = esp32_cli('status');
+            if nargout > 0
+                out = esp32_cli('status');
+            else
+                esp32_cli('status');
+            end
+        end
+
+        function Web(~)
+            % Opens the on-chip Web Register Workbench in the default browser
+            esp32_cli('web');
         end
 
         function Gui(~)

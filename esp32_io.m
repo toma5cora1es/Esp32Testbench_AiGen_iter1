@@ -1,13 +1,13 @@
 function out = esp32_io(action, varargin)
 %ESP32_IO Low-level non-blocking transport layer (USB Serial / Bluetooth SPP / Wi-Fi HTTP).
-%   Internal use by esp32.m and esp32_gui.m, or directly accessible if needed.
+%   Internal use by esp32_cli.m, esp32.m, and esp32_gui.m.
 %
 %   SUPPORTED TARGET FORMATS FOR 'connect':
 %     - 'COM9' or '/dev/ttyUSB0'     -> Serial port (USB or OS-mapped Bluetooth Virtual COM)
 %     - 'bt:ESP32_BT_BRIDGE'         -> Native MATLAB Bluetooth SPP connection by device name
 %     - 'ESP32_BT_BRIDGE'            -> Auto-detected as Bluetooth SPP device name
 %     - 'AA:BB:CC:DD:EE:FF'          -> Auto-detected as Bluetooth MAC address
-%     - '192.168.4.1'                -> Wi-Fi HTTP Bridge
+%     - '192.168.4.1'                -> Wi-Fi HTTP Bridge (auto-connects Windows WLAN to ESP32_LAB)
 
     s = get_state();
 
@@ -16,11 +16,14 @@ function out = esp32_io(action, varargin)
             out = s;
 
         case 'connect'
-            target = strtrim(char(varargin{1}));
+            if isempty(varargin) || isempty(varargin{1})
+                target = auto_pick_serial_port();
+            else
+                target = strtrim(char(varargin{1}));
+            end
             esp32_io('disconnect'); % Clean up any previous session
             s = get_state();
 
-            % Check if user explicitly passed '--bt' flag or 'bt:' prefix or Bluetooth MAC/Name
             forceBt = false;
             if numel(varargin) >= 2 && ischar(varargin{2}) && any(strcmpi(varargin{2}, {'--bt', 'bt', 'bluetooth'}))
                 forceBt = true;
@@ -40,7 +43,7 @@ function out = esp32_io(action, varargin)
                 sp = serialport(target, baud, 'Timeout', 1.5);
                 configureTerminator(sp, "LF");
                 flush(sp);
-                pause(0.15); % Brief non-blocking settle delay
+                pause(0.15);
                 flush(sp);
                 s.Mode = 'serial';
                 s.Target = upper(target);
@@ -69,7 +72,7 @@ function out = esp32_io(action, varargin)
                     error('ESP32:BluetoothConnectFailed', ...
                         ['Could not connect via Bluetooth to "%s" (%s).\n' ...
                          'Make sure the ESP32 is powered on, paired in your OS Bluetooth settings,\n' ...
-                         'or connect using its Virtual COM port (e.g., esp32 connect COM10).'], ...
+                         'or connect using its Virtual COM port (e.g., esp32_cli connect COM11).'], ...
                         btTarget, ME.message);
                 end
                 configureTerminator(btObj, "LF");
@@ -89,6 +92,9 @@ function out = esp32_io(action, varargin)
                 % --- 3. Wi-Fi HTTP Connection ---
                 ip = regexprep(target, '^https?://', '');
                 ip = regexprep(ip, '/.*$', '');
+                if strcmp(ip, '192.168.4.1') && ispc
+                    ensure_esp32_lab_wifi_connected();
+                end
                 s.Mode = 'wifi';
                 s.Target = ip;
                 s.SerialObj = [];
@@ -117,7 +123,7 @@ function out = esp32_io(action, varargin)
             rawCmd = strtrim(char(varargin{1}));
             if strcmp(s.Mode, 'none')
                 error('ESP32:NotConnected', ...
-                    'No active connection. Run first: esp32 connect COM9, esp32 connect ESP32_BT_BRIDGE, or esp32 connect 192.168.4.1');
+                    'No active connection. Run first: esp32_cli connect COM9, esp32_cli connect ESP32_BT_BRIDGE, or esp32_cli connect 192.168.4.1');
             end
             if s.Busy
                 out = 'BUSY';
@@ -134,19 +140,17 @@ function out = esp32_io(action, varargin)
                     flush(s.SerialObj);
                     writeline(s.SerialObj, rawCmd);
                     out = strtrim(char(readline(s.SerialObj)));
-                    % Ignore ESP32 ROM boot messages if it just restarted
                     while startsWith(out, 'ets ') || startsWith(out, 'rst:') || ...
                           startsWith(out, 'mode:') || startsWith(out, 'load:') || ...
                           startsWith(out, 'entry ') || strcmp(out, 'ESP32_READY')
                         out = strtrim(char(readline(s.SerialObj)));
                     end
                 elseif strcmp(s.Mode, 'wifi')
-                    opts = weboptions('Timeout', 1.2, 'ContentType', 'text');
+                    opts = weboptions('Timeout', 2.0, 'ContentType', 'text');
                     url = sprintf('http://%s/cmd?q=%s', s.Target, urlencode(rawCmd));
                     try
                         out = strtrim(char(webread(url, opts)));
                     catch
-                        % Fallback to legacy /reg endpoint if running older firmware
                         out = fallback_legacy_wifi(s.Target, rawCmd, opts);
                     end
                 end
@@ -161,9 +165,68 @@ function out = esp32_io(action, varargin)
     end
 end
 
+function port = auto_pick_serial_port()
+    [~, out] = system('arduino-cli board list 2>nul');
+    lines = splitlines(string(strtrim(out)));
+    for k = 1:numel(lines)
+        if contains(lines(k), "Serial Port (USB)", "IgnoreCase", true)
+            tok = split(strtrim(lines(k)));
+            port = char(tok(1));
+            return;
+        end
+    end
+    avail = serialportlist("available");
+    if ~isempty(avail)
+        port = char(avail(1));
+    else
+        error('ESP32:NoPort', 'Usage: esp32_cli connect <COMx | 192.168.4.1 | ESP32_BT_BRIDGE>');
+    end
+end
+
+function ensure_esp32_lab_wifi_connected()
+    [~, wlanInfo] = system('netsh wlan show interfaces');
+    if contains(wlanInfo, 'ESP32_LAB')
+        return;
+    end
+    fprintf('[ESP32] Switching Windows Wi-Fi to "ESP32_LAB" (Password: 12345678)...\n');
+    xmlProfile = [ ...
+        '<?xml version="1.0"?>' newline ...
+        '<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">' newline ...
+        '  <name>ESP32_LAB</name>' newline ...
+        '  <SSIDConfig><SSID><name>ESP32_LAB</name></SSID></SSIDConfig>' newline ...
+        '  <connectionType>ESS</connectionType>' newline ...
+        '  <connectionMode>manual</connectionMode>' newline ...
+        '  <MSM><security><authEncryption>' newline ...
+        '    <authentication>WPA2PSK</authentication>' newline ...
+        '    <encryption>AES</encryption>' newline ...
+        '    <useOneX>false</useOneX>' newline ...
+        '  </authEncryption><sharedKey>' newline ...
+        '    <keyType>passPhrase</keyType>' newline ...
+        '    <protected>false</protected>' newline ...
+        '    <keyMaterial>12345678</keyMaterial>' newline ...
+        '  </sharedKey></security></MSM>' newline ...
+        '</WLANProfile>'];
+    xmlPath = fullfile(tempdir, 'esp32_lab_profile.xml');
+    fid = fopen(xmlPath, 'w');
+    fwrite(fid, xmlProfile, 'char');
+    fclose(fid);
+    system(sprintf('netsh wlan add profile filename="%s" >nul 2>&1', xmlPath));
+    system('netsh wlan connect name="ESP32_LAB" >nul 2>&1');
+    for attempt = 1:8
+        pause(1.0);
+        [~, wOut] = system('netsh wlan show interfaces');
+        if contains(wOut, 'ESP32_LAB')
+            pause(1.0);
+            return;
+        end
+        system('netsh wlan connect name="ESP32_LAB" >nul 2>&1');
+    end
+    warning('ESP32:WifiNotConnected', ...
+        'Windows did not automatically switch to "ESP32_LAB". Please select "ESP32_LAB" (Password: 12345678) in the Windows Wi-Fi tray.');
+end
+
 function out = fallback_legacy_wifi(ip, rawCmd, ~)
-    % Backward compatibility if the chip still runs the legacy /reg firmware
-    optsJson = weboptions('Timeout', 1.2, 'ContentType', 'json');
+    optsJson = weboptions('Timeout', 2.0, 'ContentType', 'json');
     tokens = strsplit(strtrim(rawCmd));
     op = upper(tokens{1});
     if strcmp(op, 'STATUS')

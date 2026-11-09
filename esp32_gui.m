@@ -1,5 +1,5 @@
 function esp32_gui()
-%ESP32_GUI Responsive Graphical Interface styled after PLS UDE® (CLI-Backed).
+%ESP32_GUI Responsive Graphical Interface styled after PLS UDE® (Backed by esp32_cli & esp32_sfr.json).
 %   Opens the visual hardware testbench without blocking the MATLAB console.
 
     fig = findall(0, 'Type', 'figure', 'Tag', 'ESP32_UDE_GUI');
@@ -8,8 +8,12 @@ function esp32_gui()
         return;
     end
 
-    fig = uifigure('Name', 'UDE® ESP32 Workbench — CLI & Hardware Testbench', ...
-        'Position', [100 100 1120 680], 'Tag', 'ESP32_UDE_GUI', ...
+    % Load compiled SFR database (databases/esp32_sfr.json)
+    sfrDb = esp32_cli('sfr');
+    allRegNames = string(fieldnames(sfrDb.registers));
+
+    fig = uifigure('Name', 'UDE® ESP32 Workbench — SFR Database, CLI & Hardware Testbench', ...
+        'Position', [80 80 1180 720], 'Tag', 'ESP32_UDE_GUI', ...
         'Color', [0.12 0.13 0.16]);
 
     mainGrid = uigridlayout(fig, [3 1]);
@@ -19,10 +23,10 @@ function esp32_gui()
     mainGrid.RowSpacing = 8;
 
     % =========================================================================
-    % 1. TOP BAR: Connection (USB Serial / Bluetooth / Wi-Fi) + Status + Quick LED
+    % 1. TOP BAR: Connection (USB Serial / Bluetooth / Wi-Fi) + Web UI + LED
     % =========================================================================
-    topBar = uigridlayout(mainGrid, [1 7]);
-    topBar.ColumnWidth = {115, 185, 95, 105, 145, '1x', 155};
+    topBar = uigridlayout(mainGrid, [1 8]);
+    topBar.ColumnWidth = {115, 175, 90, 95, 135, 125, '1x', 135};
     topBar.Padding = [6 6 6 6];
 
     uilabel(topBar, 'Text', 'Target (COM/BT/IP):', 'FontColor', 'w', 'FontWeight', 'bold');
@@ -42,14 +46,14 @@ function esp32_gui()
 
     btnConnect = uibutton(topBar, 'Text', 'Connect', ...
         'BackgroundColor', [0.16 0.62 0.36], 'FontColor', 'w', 'FontWeight', 'bold');
-
     btnDisconnect = uibutton(topBar, 'Text', 'Disconnect', ...
         'BackgroundColor', [0.65 0.22 0.22], 'FontColor', 'w');
-
     btnLed2 = uibutton(topBar, 'Text', 'Toggle LED (GPIO 2)', ...
         'BackgroundColor', [0.15 0.45 0.85], 'FontColor', 'w', 'FontWeight', 'bold');
+    btnWebUi = uibutton(topBar, 'Text', 'Open Web Portal', ...
+        'BackgroundColor', [0.55 0.28 0.72], 'FontColor', 'w', 'FontWeight', 'bold');
 
-    lblStatus = uilabel(topBar, 'Text', 'Status: Ready (Use CLI or connect above)', ...
+    lblStatus = uilabel(topBar, 'Text', sprintf('SFR DB Loaded (%d regs). Ready.', numel(allRegNames)), ...
         'FontColor', [0.75 0.85 1.0], 'FontName', 'Consolas');
 
     btnScan = uibutton(topBar, 'Text', 'Scan COM / BT', ...
@@ -60,42 +64,43 @@ function esp32_gui()
     % =========================================================================
     tabs = uitabgroup(mainGrid);
 
-    % --- TAB 1: Peripheral Registers View (UDE style) ---
-    tabRegs = uitab(tabs, 'Title', '1. Peripheral Registers (SFR)');
-    regGrid = uigridlayout(tabRegs, [2 1]);
-    regGrid.RowHeight = {40, '1x'};
+    % --- TAB 1: Peripheral Registers View (Backed by databases/esp32_sfr.json) ---
+    tabRegs = uitab(tabs, 'Title', '1. Peripheral Registers & Bitfields (esp32_sfr.json)');
+    regGrid = uigridlayout(tabRegs, [3 1]);
+    regGrid.RowHeight = {40, '1.2x', '1x'};
 
-    regCtrl = uigridlayout(regGrid, [1 5]);
-    regCtrl.ColumnWidth = {145, 140, 140, 160, '1x'};
+    regCtrl = uigridlayout(regGrid, [1 6]);
+    regCtrl.ColumnWidth = {140, 150, 170, 130, 140, '1x'};
     regCtrl.Padding = [0 0 0 0];
 
-    btnRefreshRegs = uibutton(regCtrl, 'Text', 'Read Registers (F11)', ...
+    dropPeriph = uidropdown(regCtrl, ...
+        'Items', {'Essential GPIO & RTC', 'GPIO', 'IO_MUX', 'LEDC', 'UART', 'SPI', 'I2C', 'TIMG', 'RTC_CNTL', 'SENS', 'DPORT'}, ...
+        'Value', 'Essential GPIO & RTC');
+    edtSearchSfr = uieditfield(regCtrl, 'text', 'Value', '', 'Placeholder', 'Filter SFR name...');
+    btnRefreshRegs = uibutton(regCtrl, 'Text', 'Read Displayed Regs (F11)', ...
         'BackgroundColor', [0.20 0.50 0.80], 'FontColor', 'w', 'FontWeight', 'bold');
-    edtCustomAddr = uieditfield(regCtrl, 'text', 'Value', '0x3FF44004', 'Placeholder', 'Hex Address');
-    edtCustomVal  = uieditfield(regCtrl, 'text', 'Value', '', 'Placeholder', 'Hex Value (optional)');
-    btnExecReg    = uibutton(regCtrl, 'Text', 'Read / Write Reg', ...
+    edtCustomAddr = uieditfield(regCtrl, 'text', 'Value', 'GPIO_OUT_REG', 'Placeholder', 'Symbol or 0xAddr');
+    edtCustomVal  = uieditfield(regCtrl, 'text', 'Value', '', 'Placeholder', 'Hex Value (opt)');
+    btnExecReg    = uibutton(regCtrl, 'Text', 'Read / Write Symbol', ...
         'BackgroundColor', [0.25 0.55 0.40], 'FontColor', 'w');
-    uilabel(regCtrl, 'Text', 'Double-click the "Hex Value" column to write directly to the chip.', ...
-        'FontAngle', 'italic');
 
-    regData = {
-        'GPIO_OUT_REG',         '0x3FF44004', '0x00000000', '00000000_00000000_00000000_00000000', 'GPIO 0..31 output level (RW)';
-        'GPIO_OUT_W1TS_REG',    '0x3FF44008', '0x00000000', '00000000_00000000_00000000_00000000', 'Atomic Write 1 to Set HIGH (WO)';
-        'GPIO_OUT_W1TC_REG',    '0x3FF4400C', '0x00000000', '00000000_00000000_00000000_00000000', 'Atomic Write 1 to Clear LOW (WO)';
-        'GPIO_ENABLE_REG',      '0x3FF44020', '0x00000000', '00000000_00000000_00000000_00000000', 'Output driver enable 0..31 (RW)';
-        'GPIO_ENABLE_W1TS_REG', '0x3FF44024', '0x00000000', '00000000_00000000_00000000_00000000', 'Atomic Write 1 to Enable Output (WO)';
-        'GPIO_IN_REG',          '0x3FF4403C', '0x00000000', '00000000_00000000_00000000_00000000', 'Physical pin input level 0..31 (RO)';
-        'IO_MUX_GPIO2_REG',     '0x3FF49040', '0x00000000', '00000000_00000000_00000000_00000000', 'Pad / Pull-up configuration GPIO 2 (RW)'
-    };
-
-    tblRegs = uitable(regGrid, 'Data', regData, ...
-        'ColumnName', {'Register Name', 'Address', 'Hex Value (Editable)', 'Bits (31..0)', 'TRM Description'}, ...
+    tblRegs = uitable(regGrid, ...
+        'ColumnName', {'SFR Register Name', 'Address', 'Hex Value (Editable)', 'Bits (31..0)', 'Bitfields Count'}, ...
         'ColumnEditable', [false false true false false], ...
-        'ColumnWidth', {170, 100, 145, 290, 'auto'}, ...
+        'ColumnWidth', {220, 105, 145, 300, 'auto'}, ...
+        'FontName', 'Consolas', 'SelectionType', 'row');
+
+    pnlBf = uipanel(regGrid, 'Title', 'Selected Register Bitfields Inspector (Double-click "Field Value" to modify bitfield on chip)');
+    bfGrid = uigridlayout(pnlBf, [1 1]);
+    bfGrid.Padding = [4 4 4 4];
+    tblBitfields = uitable(bfGrid, ...
+        'ColumnName', {'Parent Register', 'Bitfield Name', 'Bits [MSB:LSB]', 'Access', 'Field Value (Editable)', 'Hex Value'}, ...
+        'ColumnEditable', [false false false false true false], ...
+        'ColumnWidth', {180, 220, 120, 80, 160, 'auto'}, ...
         'FontName', 'Consolas');
 
     % --- TAB 2: GPIO Matrix & Quick Pin Control ---
-    tabGpio = uitab(tabs, 'Title', '2. GPIO & ADC Control');
+    tabGpio = uitab(tabs, 'Title', '2. GPIO & Buzzer Control');
     gpioGrid = uigridlayout(tabGpio, [2 4]);
     gpioGrid.RowHeight = {'1x', '1x'};
     gpioGrid.ColumnWidth = {'1x', '1x', '1x', '1x'};
@@ -103,7 +108,7 @@ function esp32_gui()
     commonPins = [2, 4, 5, 12, 13, 14, 18, 19];
     for idx = 1:numel(commonPins)
         p = commonPins(idx);
-        pnl = uipanel(gpioGrid, 'Title', sprintf('GPIO %d %s', p, ternary(p==2, '(Built-in LED)', '')));
+        pnl = uipanel(gpioGrid, 'Title', sprintf('GPIO %d %s', p, ternary(p==2, '(Built-in LED)', ternary(p==4, '(Buzzer/Out)', ''))));
         pGrid = uigridlayout(pnl, [3 2]);
         lblPin = uilabel(pGrid, 'Text', 'State: ?', 'FontWeight', 'bold', 'FontName', 'Consolas');
         lblPin.Layout.Column = [1 2];
@@ -120,7 +125,7 @@ function esp32_gui()
     end
 
     % --- TAB 3: Time / Value Chart ---
-    tabChart = uitab(tabs, 'Title', '3. Time / Value Chart (ADC / Reg)');
+    tabChart = uitab(tabs, 'Title', '3. Time / Value Chart (ADC)');
     chartGrid = uigridlayout(tabChart, [2 1]);
     chartGrid.RowHeight = {40, '1x'};
 
@@ -153,8 +158,9 @@ function esp32_gui()
     otaGrid = uigridlayout(pnlOta, [2 4]);
     otaGrid.ColumnWidth = {'1x', 130, 140, 160};
 
+    rootDir = fileparts(mfilename('fullpath'));
     edtFlashPath = uieditfield(otaGrid, 'text', ...
-        'Value', 'C:\Users\tomas\persistent_app\persistent_app.ino', ...
+        'Value', fullfile(rootDir, 'sketches', 'beep_fast', 'beep_fast.ino'), ...
         'Placeholder', 'Path to .ino or .bin file');
     btnBrowse = uibutton(otaGrid, 'Text', 'Browse File...');
     dropFlashMode = uidropdown(otaGrid, 'Items', {'--wifi (OTA)', '--usb (Serial)'}, 'Value', '--wifi (OTA)');
@@ -162,21 +168,21 @@ function esp32_gui()
         'BackgroundColor', [0.85 0.38 0.12], 'FontColor', 'w', 'FontWeight', 'bold');
 
     lblOtaNote = uilabel(otaGrid, 'Text', ...
-        'Note: When selecting an .ino file, esp32_flash.m automatically injects the Wi-Fi OTA + Bluetooth SPP Daemon on Core 0.', ...
+        'Note: esp32_flash.m automatically injects the Core-0 Web Register Workbench + Wi-Fi OTA + BT SPP Daemon into any .ino sketch.', ...
         'FontAngle', 'italic');
     lblOtaNote.Layout.Column = [1 4];
 
-    pnlDump = uipanel(flashGrid, 'Title', 'Hexadecimal Memory Viewer (esp32 dump)');
+    pnlDump = uipanel(flashGrid, 'Title', 'Hexadecimal & Symbolic SFR Memory Viewer (esp32_cli dump)');
     dumpGrid = uigridlayout(pnlDump, [2 1]);
     dumpGrid.RowHeight = {36, '1x'};
     dumpCtrl = uigridlayout(dumpGrid, [1 4]);
-    dumpCtrl.ColumnWidth = {140, 120, 150, '1x'};
+    dumpCtrl.ColumnWidth = {160, 120, 150, '1x'};
     dumpCtrl.Padding = [0 0 0 0];
-    edtDumpBase = uieditfield(dumpCtrl, 'text', 'Value', '0x3FF44000');
+    edtDumpBase = uieditfield(dumpCtrl, 'text', 'Value', 'GPIO_OUT_REG');
     spnDumpWords = uispinner(dumpCtrl, 'Limits', [1 64], 'Value', 12);
     btnDump = uibutton(dumpCtrl, 'Text', 'Read Memory Block', ...
         'BackgroundColor', [0.20 0.50 0.80], 'FontColor', 'w');
-    uilabel(dumpCtrl, 'Text', '4-byte aligned 32-bit addresses.');
+    uilabel(dumpCtrl, 'Text', 'Accepts symbolic SFR names (e.g. GPIO_OUT_REG) or 0x Hex Addresses.');
 
     txtDump = uitextarea(dumpGrid, 'Editable', 'off', 'FontName', 'Consolas', 'FontSize', 12);
 
@@ -188,20 +194,113 @@ function esp32_gui()
     botBar.Padding = [4 4 4 4];
     uilabel(botBar, 'Text', 'MATLAB CLI Equivalent:', 'FontColor', [0.4 0.9 0.5], 'FontWeight', 'bold');
     edtCliEcho = uieditfield(botBar, 'text', 'Editable', 'off', ...
-        'Value', '>> esp32 connect 192.168.4.1', ...
+        'Value', '>> esp32_cli connect 192.168.4.1', ...
         'FontName', 'Consolas', 'BackgroundColor', [0.08 0.09 0.11], 'FontColor', [0.4 0.95 0.5]);
 
+    % Initialize SFR Table
+    populate_sfr_table();
+
     % =========================================================================
-    % CALLBACKS (Delegate everything to esp32.m for zero duplicated logic)
+    % CALLBACKS
     % =========================================================================
     function echo_cli(cmdStr)
         edtCliEcho.Value = ['>> ' cmdStr];
         fprintf('CLI Echo: %s\n', cmdStr);
     end
 
+    dropPeriph.ValueChangedFcn = @(~,~) populate_sfr_table();
+    edtSearchSfr.ValueChangedFcn = @(~,~) populate_sfr_table();
+
+    function populate_sfr_table()
+        grp = dropPeriph.Value;
+        q = upper(strtrim(edtSearchSfr.Value));
+        if strcmp(grp, 'Essential GPIO & RTC') && isempty(q)
+            sel = ["GPIO_OUT_REG", "GPIO_OUT_W1TS_REG", "GPIO_OUT_W1TC_REG", ...
+                   "GPIO_ENABLE_REG", "GPIO_ENABLE_W1TS_REG", "GPIO_IN_REG", ...
+                   "IO_MUX_GPIO2_REG", "IO_MUX_GPIO4_REG", "RTC_CNTL_STORE0_REG"];
+            sel = sel(isfield(sfrDb.registers, sel));
+        else
+            prefix = string(grp);
+            if strcmp(grp, 'Essential GPIO & RTC'), prefix = ""; end
+            sel = allRegNames;
+            if strlength(prefix) > 0
+                sel = sel(startsWith(sel, prefix));
+            end
+            if ~isempty(q)
+                sel = sel(contains(sel, q));
+            end
+            if numel(sel) > 45
+                sel = sel(1:45);
+            end
+        end
+
+        rows = cell(numel(sel), 5);
+        for k = 1:numel(sel)
+            rName = char(sel(k));
+            rMeta = sfrDb.registers.(rName);
+            nBf = numel(fieldnames(rMeta.bitfields));
+            rows(k, :) = {rName, char(rMeta.address), '0x00000000', ...
+                          '00000000_00000000_00000000_00000000', sprintf('%d fields', nBf)};
+        end
+        tblRegs.Data = rows;
+        if ~isempty(rows)
+            populate_bitfields_table(rows{1, 1}, uint32(0));
+        end
+    end
+
+    tblRegs.SelectionChangedFcn = @(~, evt) on_select_reg_row(evt);
+    function on_select_reg_row(evt)
+        if isempty(evt.Selection), return; end
+        rowIdx = evt.Selection(1);
+        rName = tblRegs.Data{rowIdx, 1};
+        hexValStr = regexprep(tblRegs.Data{rowIdx, 3}, '^0[xX]', '');
+        val = uint32(hex2dec(hexValStr));
+        populate_bitfields_table(rName, val);
+    end
+
+    function populate_bitfields_table(rName, regVal)
+        if ~isfield(sfrDb.registers, rName)
+            tblBitfields.Data = {};
+            return;
+        end
+        rMeta = sfrDb.registers.(rName);
+        bfs = fieldnames(rMeta.bitfields);
+        bRows = cell(numel(bfs), 6);
+        for k = 1:numel(bfs)
+            bfName = bfs{k};
+            bf = rMeta.bitfields.(bfName);
+            lsb = double(bf.offset);
+            w   = double(bf.width);
+            msb = lsb + w - 1;
+            mask = bitshift(uint32(2^w - 1), lsb);
+            fVal = bitshift(bitand(regVal, mask), -lsb);
+            bRows(k, :) = {rName, bfName, sprintf('[%d:%d]', msb, lsb), ...
+                           char(bf.access), double(fVal), sprintf('0x%X', fVal)};
+        end
+        tblBitfields.Data = bRows;
+    end
+
+    tblBitfields.CellEditCallback = @(~, evt) on_bitfield_edit(evt);
+    function on_bitfield_edit(evt)
+        r = evt.Indices(1);
+        rName  = tblBitfields.Data{r, 1};
+        bfName = tblBitfields.Data{r, 2};
+        newVal = uint32(evt.NewData);
+        echo_cli(sprintf('esp32_cli bits %s %s %u', rName, bfName, newVal));
+        rb = esp32_cli('bits', rName, bfName, newVal);
+        populate_bitfields_table(rName, rb);
+        on_refresh_regs();
+    end
+
+    btnWebUi.ButtonPushedFcn = @(~,~) on_open_web();
+    function on_open_web()
+        echo_cli('esp32_cli web');
+        esp32_cli('web');
+    end
+
     btnScan.ButtonPushedFcn = @(~,~) on_scan();
     function on_scan()
-        echo_cli('esp32 scan --bt');
+        echo_cli('esp32_cli scan --bt');
         lblStatus.Text = 'Scanning Serial & Bluetooth SPP devices...';
         drawnow;
         avail = esp32_cli('scan', '--bt');
@@ -212,7 +311,7 @@ function esp32_gui()
     btnConnect.ButtonPushedFcn = @(~,~) on_connect();
     function on_connect()
         t = strtrim(targetDrop.Value);
-        echo_cli(sprintf('esp32 connect %s', t));
+        echo_cli(sprintf('esp32_cli connect %s', t));
         lblStatus.Text = sprintf('Connecting to %s...', t);
         drawnow;
         try
@@ -229,7 +328,7 @@ function esp32_gui()
 
     btnDisconnect.ButtonPushedFcn = @(~,~) on_disconnect();
     function on_disconnect()
-        echo_cli('esp32 disconnect');
+        echo_cli('esp32_cli disconnect');
         esp32_cli('disconnect');
         lblStatus.Text = 'Status: DISCONNECTED';
         lblStatus.FontColor = [0.9 0.7 0.3];
@@ -237,15 +336,16 @@ function esp32_gui()
 
     btnLed2.ButtonPushedFcn = @(~,~) on_led2();
     function on_led2()
-        echo_cli('esp32 pin 2 toggle');
+        echo_cli('esp32_cli pin 2 toggle');
         st = esp32_cli('pin', 2, 'toggle');
         lblStatus.Text = sprintf('GPIO 2 (LED) = %d', st);
     end
 
     btnRefreshRegs.ButtonPushedFcn = @(~,~) on_refresh_regs();
     function on_refresh_regs()
-        echo_cli('esp32 dump 0x3FF44000 10');
         d = tblRegs.Data;
+        if isempty(d), return; end
+        echo_cli(sprintf('esp32_cli reg %s', d{1, 1}));
         for r = 1:size(d, 1)
             try
                 val = esp32_cli('reg', d{r, 2});
@@ -255,19 +355,22 @@ function esp32_gui()
                     raw(1:4), raw(5:8), raw(9:12), raw(13:16), ...
                     raw(17:20), raw(21:24), raw(25:28), raw(29:32));
             catch
+                break;
             end
         end
         tblRegs.Data = d;
+        populate_bitfields_table(d{1, 1}, uint32(hex2dec(regexprep(d{1, 3}, '^0[xX]', ''))));
     end
 
     tblRegs.CellEditCallback = @(~, evt) on_reg_edit(evt);
     function on_reg_edit(evt)
         r = evt.Indices(1);
-        addrStr = tblRegs.Data{r, 2};
+        rName = tblRegs.Data{r, 1};
         newValStr = evt.NewData;
-        echo_cli(sprintf('esp32 reg %s %s', addrStr, newValStr));
-        rb = esp32_cli('reg', addrStr, newValStr);
+        echo_cli(sprintf('esp32_cli reg %s %s', rName, newValStr));
+        rb = esp32_cli('reg', rName, newValStr);
         tblRegs.Data{r, 3} = sprintf('0x%08X', rb);
+        populate_bitfields_table(rName, rb);
         on_refresh_regs();
     end
 
@@ -276,19 +379,21 @@ function esp32_gui()
         aStr = strtrim(edtCustomAddr.Value);
         vStr = strtrim(edtCustomVal.Value);
         if isempty(vStr)
-            echo_cli(sprintf('esp32 reg %s', aStr));
+            echo_cli(sprintf('esp32_cli reg %s', aStr));
             v = esp32_cli('reg', aStr);
             edtCustomVal.Value = sprintf('0x%08X', v);
+            populate_bitfields_table(upper(aStr), v);
         else
-            echo_cli(sprintf('esp32 reg %s %s', aStr, vStr));
+            echo_cli(sprintf('esp32_cli reg %s %s', aStr, vStr));
             v = esp32_cli('reg', aStr, vStr);
             edtCustomVal.Value = sprintf('0x%08X', v);
+            populate_bitfields_table(upper(aStr), v);
             on_refresh_regs();
         end
     end
 
     function gpio_action(pinNum, act, lblHandle)
-        echo_cli(sprintf('esp32 pin %d %s', pinNum, act));
+        echo_cli(sprintf('esp32_cli pin %d %s', pinNum, act));
         st = esp32_cli('pin', pinNum, act);
         lblHandle.Text = sprintf('State: %d', st);
     end
@@ -299,7 +404,7 @@ function esp32_gui()
 
     function sample_adc(nSamples)
         p = round(spnAdcPin.Value);
-        echo_cli(sprintf('esp32 adc %d', p));
+        echo_cli(sprintf('esp32_cli adc %d', p));
         for k = 1:nSamples
             raw = esp32_cli('adc', p);
             v = (double(raw) / 4095.0) * 3.3;
@@ -321,7 +426,7 @@ function esp32_gui()
         fPath = strtrim(edtFlashPath.Value);
         flag = '--wifi';
         if contains(dropFlashMode.Value, 'usb'), flag = '--usb'; end
-        echo_cli(sprintf('esp32 flash "%s" %s', fPath, flag));
+        echo_cli(sprintf('esp32_cli flash "%s" %s', fPath, flag));
         lblStatus.Text = 'Compiling and flashing... check the MATLAB Command Window.';
         drawnow;
         try
@@ -338,20 +443,18 @@ function esp32_gui()
     function on_dump()
         bAddr = strtrim(edtDumpBase.Value);
         nW = round(spnDumpWords.Value);
-        echo_cli(sprintf('esp32 dump %s %d', bAddr, nW));
+        echo_cli(sprintf('esp32_cli dump %s %d', bAddr, nW));
         vals = esp32_cli('dump', bAddr, nW);
-        base = uint32(hex2dec(regexprep(bAddr, '^0[xX]', '')));
         lines = strings(numel(vals)+2, 1);
-        lines(1) = "Address     | Hexadecimal | Decimal    | Binary (31..0)";
-        lines(2) = "------------+-------------+------------+------------------------------------";
+        lines(1) = "Word # | Hexadecimal | Decimal    | Binary (31..0)";
+        lines(2) = "-------+-------------+------------+------------------------------------";
         for k = 1:numel(vals)
-            a = base + uint32((k-1)*4);
             v = vals(k);
             raw = dec2bin(v, 32);
             bStr = sprintf('%s_%s_%s_%s_%s_%s_%s_%s', ...
                 raw(1:4), raw(5:8), raw(9:12), raw(13:16), ...
                 raw(17:20), raw(21:24), raw(25:28), raw(29:32));
-            lines(k+2) = sprintf('0x%08X  | 0x%08X  | %10u | %s', a, v, v, bStr);
+            lines(k+2) = sprintf('  +%02d  | 0x%08X  | %10u | %s', (k-1)*4, v, v, bStr);
         end
         txtDump.Value = lines;
     end
