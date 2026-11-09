@@ -330,10 +330,15 @@ function usbPort = detect_usb_com_port(acli)
 end
 
 function merged = inject_core0_daemon(userCode)
+    if isempty(strtrim(userCode))
+        error('ESP32:EmptySketch', 'The specified .ino file is empty (0 bytes).');
+    end
     modifiedUser = regexprep(userCode, '\<void\s+setup\s*\(\s*(void)?\s*\)', 'void user_setup()', 'once');
-
     if ~contains(modifiedUser, 'user_setup')
-        modifiedUser = strrep(userCode, 'void setup()', 'void user_setup()');
+        modifiedUser = [modifiedUser newline 'void user_setup() {}' newline];
+    end
+    if isempty(regexp(modifiedUser, '\<void\s+loop\s*\(\s*(void)?\s*\)', 'once'))
+        modifiedUser = [modifiedUser newline 'void loop() { delay(100); }' newline];
     end
 
     daemonHeader = [

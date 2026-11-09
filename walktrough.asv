@@ -1,0 +1,709 @@
+%[text] ## Step 1: Project Initialization & SFR Database Setup
+
+%%\ 1.1 Set Working Directory and Add All Subfolders to Path
+cd('C:\Users\tomas\MATLAB\esp32_workbench_v3');
+addpath(genpath(pwd));
+
+%%\ 1.2 Verify or Rebuild the Compiled ESP32 SFR Database (databases/esp32_sfr.json)
+% Parses ESP-IDF C headers (*_reg.h + soc.h) into a structured JSON database
+if ~isfile(fullfile('databases', 'esp32_sfr.json'))
+    if ~isfolder('databases'), mkdir('databases'); end
+    buildSfrDatabase(fullfile('databases', 'esp32_sfr.json'));
+end
+
+%%\ 1.3 View CLI & OOP Quick Help
+help esp32_cli %[output:55c74bfa]
+help esp32 %[output:545ed589]
+%%
+%[text] ## Step 2: Autonomous Hardware Diagnostics & First USB Bootstrap Flash
+%[text] Before using Wi-Fi OTA, Bluetooth SPP, or the Web Register Workbench, run the autonomous hardware diagnostic (`esp32_cli debug`) to verify the physical USB cable (`USB-SERIAL CH340 (COM9)`) and flash the base bridge firmware once over USB.
+
+%%\ 2.1 Run Autonomous PowerShell & MATLAB Hardware Diagnostics
+% Inspects open MATLAB handles, Registry SERIALCOMM kernel drivers,
+% Windows PnP USB-UART bridges (CH340/CP210x), arduino-cli, and Wi-Fi status.
+esp32_cli debug %[output:0125afd8]
+
+%%\ 2.2 Scan Available Serial & Virtual Bluetooth Ports
+esp32_cli scan %[output:6dc2a3a0]
+
+%%\ 2.3 Flash the Base Bridge Firmware over USB (Auto-Detects COM9!)
+% Automatically isolates the build, injects the Core-0 Web + Wi-Fi OTA + BT Daemon,
+% and flashes over your physical USB port (COM9).
+esp32_cli flash C:\Users\tomas\MATLAB\esp32_workbench_v3\firmware\esp32_bridge_ota\esp32_bridge_ota.ino --usb %[output:7ee75035]
+
+% --- Explicit COM Port or OOP Equivalent ---
+% esp32_cli flash C:\Users\tomas\MATLAB\esp32_workbench_v3\firmware\esp32_bridge_ota\esp32_bridge_ota.ino --usb COM9
+% esp32().Flash('C:\Users\tomas\MATLAB\esp32_workbench_v3\firmware\esp32_bridge_ota\esp32_bridge_ota.ino', '--usb');
+%%
+%[text] ## Step 3: Connecting to the ESP32 (All 3 Transport Modes)
+%[text] Once the Core-0 daemon is flashed, it runs simultaneously on three interfaces: **USB Serial (****`COM9`****)**, **Bluetooth Classic SPP (****`ESP32_BT_BRIDGE`** **/** **`COM11`****)**, and **Wi-Fi SoftAP (****`ESP32_LAB`** **at** **`192.168.4.1`****)**. Every CLI and OOP command works identically across all three modes.
+%[text] 
+%[text] **Option A: Connect via Physical USB Serial (****`COM9`****)** 
+
+%%\ 3A. Connect over USB Serial (115200 baud)
+esp32_cli connect COM8 %[output:1aad0713]
+esp32_cli status %[output:62585460]
+
+% --- Equivalent OOP Syntax ---
+dev = esp32('COM8'); %[output:4be5b9fa]
+dev.Status() %[output:3169df34]
+%[text] **Option B: Connect via Bluetooth Classic SPP (****`ESP32_BT_BRIDGE`** **or** **`COM11`****)**
+%[text] Your diagnostic report showed `ESP32_BT_BRIDGE` paired in Windows with virtual serial port `COM11`. You can connect either via native MATLAB Bluetooth SPP or via its virtual COM port:
+%[text] 
+%%\ 3B.1 Connect via Native MATLAB Bluetooth SPP
+esp32_cli connect ESP32_BT_BRIDGE %[output:91361d13]
+esp32_cli status %[output:7fbc5b19]
+
+%%\ 3B.2 Or Connect via Bluetooth Virtual COM Port (Fast Serial Transport)
+esp32_cli connect COM11 %[output:078fe655]
+esp32_cli status %[output:79b531a4]
+
+% --- Equivalent OOP Syntax ---
+dev = esp32();
+dev.ConnectBluetooth('ESP32_BT_BRIDGE'); %[output:55813cca]
+dev.Status() %[output:2501187d]
+%[text] 
+%[text] **Option C: Connect via Wi-Fi (****`ESP32_LAB`** **SoftAP at** **`192.168.4.1`****)**
+%[text] The ESP32 broadcasts the Wi-Fi network **`ESP32_LAB`** (Password: **`12345678`**, IP: **`192.168.4.1`**).
+%[text] *(Note: With the updated* *`esp32_io.m`**, running* *`esp32_cli connect 192.168.4.1`* *automatically creates the Windows WLAN profile and switches your PC's Wi-Fi to* *`ESP32_LAB`**.)*
+%%\ 3C. Connect over Wi-Fi HTTP Bridge (http://192.168.4.1)
+esp32_cli connect 192.168.4.1 %[output:5c9372a5]
+esp32_cli status %[output:2c3a6f21]
+
+% --- Equivalent OOP Syntax ---
+dev = esp32('192.168.4.1'); %[output:085786d3]
+dev.Status() %[output:5722c0ee]
+%[text] 
+%[text] **Disconnecting**
+%%\ 3D. Close Active Connection (Releases COM9 / Bluetooth / Wi-Fi session)
+esp32_cli disconnect %[output:8fb8cac8]
+
+% --- Equivalent OOP Syntax ---
+dev.Disconnect(); %[output:702cd3f0]
+%[text] 
+%%
+%[text] ## Step 4: Exploring the `esp32_sfr.json` Register Database
+%[text] Query the compiled `databases/esp32_sfr.json` database directly from the MATLAB Command Window to inspect register addresses and bitfield definitions (`[MSB:LSB]`) without leaving MATLAB.
+
+%%\ 4.1 Show SFR Database Summary (Derivative & Total Register Count)
+esp32_cli sfr %[output:4b0d56c1]
+
+%%\ 4.2 Search Registers by Peripheral Prefix or Keyword
+esp32_cli sfr GPIO          % All GPIO matrix registers %[output:26b25698]
+esp32_cli sfr IO_MUX        % Pad configuration registers (pull-up, drive strength) %[output:7ce03bce]
+esp32_cli sfr LEDC          % PWM / LED Controller registers %[output:9d5288b5]
+esp32_cli sfr RTC_CNTL      % RTC Control & scratchpad registers %[output:99c4ae2b]
+
+%%\ 4.3 Inspect the Bitfield Map of Specific Registers
+esp32_cli sfr GPIO_OUT_REG %[output:6820bd3e]
+esp32_cli sfr IO_MUX_GPIO2_REG %[output:76890b3d]
+esp32_cli sfr RTC_CNTL_STORE0_REG %[output:58f09e0c]
+
+% --- Equivalent OOP Syntax ---
+regMeta = esp32().Sfr('GPIO_OUT_REG'); %[output:1f1c270e]
+
+%[text] 
+%%
+%[text] ## Step 5: High-Level Digital GPIO, Built-in LED & ADC Commands
+%[text] First, connect over your preferred transport (for example `esp32_cli connect COM9`) and test the hardware pins with high-level commands:
+%%\ Ensure we have an active connection
+esp32_cli connect COM8 %[output:9c806797]
+
+%%\ 5.1 Built-in LED Shortcuts (Controls GPIO 2)
+esp32_cli led on            % Turn built-in LED (GPIO 2) ON %[output:0c4009ae]
+pause(0.5);
+esp32_cli led off           % Turn built-in LED (GPIO 2) OFF %[output:88e35f65]
+pause(0.5);
+esp32_cli led toggle        % Toggle built-in LED (GPIO 2) %[output:2c9aec34]
+
+% --- Equivalent OOP Syntax ---
+dev = esp32('COM8'); %[output:854aedb9]
+dev.Led('on'); %[output:297bc3a2]
+dev.Led('off'); %[output:2c16ec5b]
+dev.Led('toggle'); %[output:0b758049]
+
+%%\ 5.2 General-Purpose Digital Pin Control (Any GPIO Pin)
+esp32_cli pin 2 high        % Set GPIO 2 HIGH (3.3V) %[output:1f1d9639]
+esp32_cli pin 2 read        % Read digital state of GPIO 2 (returns 1) %[output:798f2971]
+esp32_cli pin 2 low         % Set GPIO 2 LOW  (0V) %[output:8b02e5ad]
+esp32_cli pin 2 toggle      % Toggle GPIO 2 %[output:205d0c91]
+
+esp32_cli pin 4 high        % Activate GPIO 4 (Buzzer / External Output) %[output:667809c7]
+pause(0.2);
+esp32_cli pin 4 low         % Deactivate GPIO 4 %[output:1ec39d2c]
+
+% --- Equivalent OOP Syntax ---
+dev.Pin(2, 'high'); %[output:7077c870]
+state = dev.Pin(2, 'read');
+dev.Pin(2, 'low'); %[output:1ded49e6]
+
+%%\ 5.3 Analog-to-Digital Converter (ADC1 Pins: GPIO 32..39)
+esp32_cli adc 34            % Reads 12-bit raw value (0..4095) and Voltage (0.000..3.300 V) %[output:16edbf77]
+esp32_cli adc 35 %[output:946641dc]
+
+% --- Equivalent OOP Syntax ---
+rawAdc = dev.Adc(34);
+%%
+%[text] ## Step 6: Direct 32-Bit Register, Bitfield & Memory Manipulation
+%[text] This section demonstrates bare-metal hardware access using both **raw hexadecimal addresses** (`0x3FF44004`) and **symbolic SFR names** (`GPIO_OUT_REG`) from `databases/esp32_sfr.json`.
+%[text] **6.1. Reading & Writing 32-Bit Registers by Hex Address**
+%%\ Read GPIO Output Register (0x3FF44004) and GPIO Input Register (0x3FF4403C)
+esp32_cli reg 0x3FF44004 %[output:2b9fad3e]
+esp32_cli reg 0x3FF4403C %[output:1ce7dae9]
+
+%%\ Atomic GPIO 2 Control via Set/Clear Hardware Registers (Bit 2 = 0x00000004)
+esp32_cli reg 0x3FF44024 0x00000004   % GPIO_ENABLE_W1TS_REG : Enable GPIO 2 as Output %[output:7b0438a3]
+esp32_cli reg 0x3FF44008 0x00000004   % GPIO_OUT_W1TS_REG    : Set GPIO 2 HIGH (LED ON) %[output:93bba2df]
+esp32_cli reg 0x3FF44004              % Read back GPIO_OUT_REG (verify Bit 2 == 1) %[output:5916f1c1]
+esp32_cli reg 0x3FF4400C 0x00000004   % GPIO_OUT_W1TC_REG    : Clear GPIO 2 LOW (LED OFF) %[output:2c6ba377]
+
+% --- Equivalent OOP Syntax ---
+val = dev.Reg(0x3FF44004);
+dev.Reg(0x3FF44008, 0x00000004); %[output:26f418cf]
+
+%[text] **6.2. Symbolic Register Read & Write (****`esp32_sfr.json`****)**
+%%\ Symbolic Read (Automatically decodes and lists non-zero bitfields)
+esp32_cli reg GPIO_OUT_REG %[output:9618f5c7]
+esp32_cli reg GPIO_ENABLE_REG %[output:203ffd18]
+
+%%\ Symbolic Write
+esp32_cli reg GPIO_ENABLE_W1TS_REG 0x00000004 %[output:99234173]
+esp32_cli reg GPIO_OUT_W1TS_REG    0x00000004 %[output:8221ca0d]
+esp32_cli reg GPIO_OUT_W1TC_REG    0x00000004 %[output:08148da8]
+
+% --- Equivalent OOP Syntax ---
+dev.Reg('GPIO_ENABLE_W1TS_REG', 0x00000004); %[output:1c1ad8a1]
+dev.Reg('GPIO_OUT_W1TS_REG', 0x00000004); %[output:13c7998f]
+%[text] **6.3. Modifying Individual Bitfields (Read-Modify-Write)**
+%%\ Method A: Symbolic Bitfield Name (from esp32_sfr.json)
+esp32_cli bits GPIO_ENABLE_REG GPIO2 1    % Enable GPIO 2 output driver %[output:9a2c1751]
+esp32_cli bits GPIO_OUT_REG    GPIO2 1    % Set GPIO2 bitfield = 1 (LED ON) %[output:2e847a15]
+esp32_cli bits GPIO_OUT_REG    GPIO2      % Read only the GPIO2 bitfield %[output:2cbfa15d]
+esp32_cli bits GPIO_OUT_REG    GPIO2 0    % Clear GPIO2 bitfield = 0 (LED OFF) %[output:6aea4498]
+
+%%\ Method B: Numeric Bit Range [MSB LSB]
+esp32_cli bits 0x3FF44004 2 2 1           % Set bit [2:2] = 1 in 0x3FF44004 %[output:79ef7b10]
+esp32_cli bits 0x3FF44004 2 2 0           % Set bit [2:2] = 0 in 0x3FF44004 %[output:72dbbe08]
+
+% --- Equivalent OOP Syntax ---
+dev.Bits('GPIO_OUT_REG', 'GPIO2', 1); %[output:3300fe72]
+dev.Bits(0x3FF44004, 2, 2, 0); %[output:17e53799]
+%[text] **6.4. Contiguous Memory Block Dump**
+%%\ Dump 8 consecutive 32-bit registers starting at 0x3FF44000 (DR_REG_GPIO_BASE)
+esp32_cli dump 0x3FF44000 8 %[output:229b5032]
+
+%%\ Dump 6 consecutive registers starting at a Symbolic Register Name
+esp32_cli dump GPIO_OUT_REG 6 %[output:05e40939]
+
+% --- Equivalent OOP Syntax ---
+words = dev.Dump('GPIO_OUT_REG', 6);
+%%
+%[text] ## Step 7: Flashing Application Sketches (`beep_slow.ino` & `beep_fast.ino`) + Live RAM Register Override
+%[text] In your `esp32_workbench_v3` folder, both application sketches are located in `firmware\esp32_bridge_ota\`.
+%[text] When `esp32_flash` compiles either sketch, it automatically isolates the sketch in a temporary build folder and injects the Core-0 daemon so you never lose USB, Bluetooth, Web, or Wi-Fi OTA access.
+%%
+%[text] **7.1. Flash Sketch \#1:** **`beep_slow.ino`** **(3000 ms Interval)**
+%[text] You can flash via `--usb` (auto-detects `COM9` and automatically releases/reconnects the MATLAB serial session) or via `--wifi` (when connected to `ESP32_LAB`):
+esp32_cli scan %[output:983cfaf2]
+%%\ 7.1 Flash beep_slow.ino via USB (COM8) or Wi-Fi (--wifi)
+esp32_cli flash C:\Users\tomas\MATLAB\esp32_workbench_v3\firmware\esp32_bridge_ota\beep_slow.ino --usb COM8 %[output:31cf72dd]
+
+%%\ Reconnect (if not already connected) and check status
+esp32_cli connect COM8 %[output:4d684dee]
+esp32_cli status %[output:65d64f8e]
+%[text] - **Physical Verification:** GPIO 4 (buzzer) emits a 1000 Hz tone and GPIO 2 (LED) blinks once every **3000 ms (3 seconds)**. \
+%%
+%[text] 
+%[text] **7.2. Live Register Experiment: Modify Beep Speed in RAM Without Reflashing!**
+%[text] `beep_slow.ino` reads its delay period on every cycle from the 32-bit RTC scratchpad register **`RTC_CNTL_STORE0_REG`** **(****`0x3FF4804C`****)**. Overwrite this register live from MATLAB to change the hardware timing on the fly:
+%%\ 7.2 Connect and override the beep interval in RAM (RTC_CNTL_STORE0_REG) without reflashing!
+esp32_cli connect COM8 %[output:64ba5364]
+esp32_cli reg RTC_CNTL_STORE0_REG        % Reads 0x00000BB8 (3000 ms) %[output:71648bbd]
+esp32_cli reg RTC_CNTL_STORE0_REG 400    % Speeds up to 400 ms live! %[output:32aafa4f]
+esp32_cli reg RTC_CNTL_STORE0_REG 120    % Speeds up to 120 ms live! %[output:21d2f103]
+esp32_cli reg RTC_CNTL_STORE0_REG 3000   % Restores 3000 ms %[output:2009a4f2]
+%%
+%[text] 
+%[text] **7.3. Flash Sketch \#2:** **`beep_fast.ino`** **(200 ms High-Pitch Alarm)**
+%%\ 7.3 Flash beep_fast.ino
+esp32_cli flash C:\Users\tomas\MATLAB\esp32_workbench_v3\firmware\esp32_bridge_ota\beep_fast.ino --usb COM8 %[output:656f03c9]
+
+% --- Equivalent OOP One-Liner ---
+% esp32().Flash('C:\Users\tomas\MATLAB\esp32_workbench_v3\firmware\esp32_bridge_ota\beep_fast.ino', '--usb');
+%[text] - **Physical Verification:** The ESP32 reboots into the 2400 Hz fast alarm (200 ms interval), and you can still override `RTC_CNTL_STORE0_REG` at any time: \
+%%
+esp32_cli connect COM8 %[output:0a6ca9c7]
+esp32_cli reg RTC_CNTL_STORE0_REG 3000  % alarm to X ms live! %[output:9cbe403b]
+%%
+%[text] ## Step 8: Sample Scripts for Your `examples/` Folder
+%[text] You can save these two standalone scripts inside `C:\Users\tomas\MATLAB\esp32_workbench_v3\examples\` for automated classroom demos.
+%[text] **Sample Script 1:** **`examples/demo_register_knight_rider.m`**
+%[text] Demonstrates direct symbolic SFR register writes, read-modify-write bitfield operations, and live beep interval control over COMx (or Wi-Fi/BT):
+%%\ DEMO 1: Bare-Metal SFR Register & Live Timer Manipulation
+% File: C:\Users\tomas\MATLAB\esp32_workbench_v3\examples\demo_register_knight_rider.m
+
+clear; clc;
+cd('C:\Users\tomas\MATLAB\esp32_workbench_v3');
+addpath(genpath(pwd));
+
+fprintf('=== 1. Connecting to ESP32 ===\n'); %[output:6b627709]
+dev = esp32('COM8'); % Or esp32('192.168.4.1') / esp32('ESP32_BT_BRIDGE') %[output:05112290]
+dev.Status(); %[output:11d4665d]
+
+fprintf('\n=== 2. Inspecting GPIO_OUT_REG Bitfield Map from esp32_sfr.json ===\n'); %[output:458d69dc]
+dev.Sfr('GPIO_OUT_REG'); %[output:87ce2086]
+
+fprintf('\n=== 3. Toggling Built-in LED (GPIO 2) via Atomic W1TS / W1TC Registers ===\n'); %[output:0c593dce]
+dev.Reg('GPIO_ENABLE_W1TS_REG', 0x00000004); % Enable GPIO 2 Output %[output:7fba8043]
+for k = 1:6 %[output:group:762aa37b]
+    dev.Reg('GPIO_OUT_W1TS_REG', 0x00000004); % Atomic Set Bit 2 HIGH %[output:4431df3b] %[output:485fb4da] %[output:03228bcf] %[output:734ea4d1] %[output:6b9f35fe] %[output:40322556]
+    pause(0.15);
+    dev.Reg('GPIO_OUT_W1TC_REG', 0x00000004); % Atomic Clear Bit 2 LOW %[output:438e52d7] %[output:2162974a] %[output:54e4f3ff] %[output:2cd95e60] %[output:54d4ba8c] %[output:2eafe4ac]
+    pause(0.15);
+end %[output:group:762aa37b]
+
+fprintf('\n=== 4. Sweeping Dynamic Beep Period via RTC_CNTL_STORE0_REG (0x3FF4804C) ===\n'); %[output:60ec1889]
+for periodMs = [800, 400, 200, 100, 1000] %[output:group:48384acf]
+    fprintf('  -> Setting RTC_CNTL_STORE0_REG = %d ms\n', periodMs); %[output:762fb676] %[output:169a9de0] %[output:520bc438] %[output:39d8d8e5] %[output:56a82a8d]
+    dev.Reg('RTC_CNTL_STORE0_REG', periodMs); %[output:35135f9a] %[output:64f04475] %[output:46b3353f] %[output:8f63e6be] %[output:56df40db]
+    pause(2.0);
+end %[output:group:48384acf]
+
+fprintf('\n=== 5. Dumping GPIO Peripheral Memory Block ===\n'); %[output:40b772f9]
+dev.Dump('GPIO_OUT_REG', 8); %[output:960c4171]
+%%
+%[text] **Sample Script 2:** **`examples/demo_live_adc_logger.m`**
+%[text] Samples ADC1 (`GPIO 34`) in real time and plots the voltage waveform alongside the state of `GPIO_OUT_REG`:
+%%\ DEMO 2: Real-Time ADC Voltage Logger & Register Monitor
+% File: C:\Users\tomas\MATLAB\esp32_workbench_v3\examples\demo_live_adc_logger.m
+
+clear; clc;
+cd('C:\Users\tomas\MATLAB\esp32_workbench_v3');
+addpath(genpath(pwd));
+
+dev = esp32('COM8'); %[output:815b5ce0]
+adcPin = 33;
+nSamples = 400;
+
+volts = zeros(1, nSamples);
+timestamps = zeros(1, nSamples);
+
+figure('Name', 'ESP32 Real-Time ADC1 Logger', 'Color', 'w'); %[output:2be79713]
+hLine = animatedline('LineWidth', 2, 'Color', [0 0.45 0.74], 'Marker', 'o'); %[output:2be79713]
+grid on; xlabel('Time (s)'); ylabel('Voltage (V)'); %[output:2be79713]
+title(sprintf('Live ESP32 ADC1 Capture on GPIO %d', adcPin)); %[output:2be79713]
+ylim([0 3.4]); %[output:2be79713]
+
+tStart = tic;
+for k = 1:nSamples %[output:group:18b5e290]
+    raw = dev.Adc(adcPin);
+    volts(k) = (double(raw) / 4095.0) * 3.3;
+    timestamps(k) = toc(tStart);
+    addpoints(hLine, timestamps(k), volts(k)); %[output:2be79713]
+    drawnow limitrate;
+end %[output:group:18b5e290]
+fprintf('Capture complete. Mean Voltage: %.3f V\n', mean(volts)); %[output:0ee5332d]
+
+%%
+%[text] ## Step 9: Launching the Visual Interfaces (UDE® MATLAB GUI & On-Chip Web Portal)
+%[text] **9.1. Launch the MATLAB UDE® Workbench GUI (****`esp32_gui.m`****)**
+%[text] Works over **USB (****`COM9`****)**, **Bluetooth (****`ESP32_BT_BRIDGE`** **/** **`COM11`****)**, or **Wi-Fi (****`192.168.4.1`****)**:
+%%\ Open the UDE® ESP32 Visual Workbench in MATLAB
+esp32_cli gui
+
+% --- Equivalent OOP Syntax ---
+esp32().Gui();
+%[text] ## 
+%[text] ## 
+%[text] ## Quick Reference Card (`esp32_workbench_v3`)
+%[text:table]{"columnWidths":[212,-1,-1],"ignoreHeader":true}
+%[text] | **Operation** | **Pure CLI Command (****`esp32_cli`****)** | **OOP Facade (****`esp32`****)** |
+%[text] | --- | --- | --- |
+%[text] | **Autonomous Hardware Debug** | `esp32_cli debug` | — |
+%[text] | **Scan Serial & BT Ports** | `esp32_cli scan` | `esp32().Scan()` |
+%[text] | **Connect via USB (****`COM9`****)** | `esp32_cli connect COM9` | `dev = esp32('COM9')` |
+%[text] | **Connect via Bluetooth** | `esp32_cli connect ESP32_BT_BRIDGE` | `dev = esp32('ESP32_BT_BRIDGE')` |
+%[text] | **Connect via Wi-Fi (****`ESP32_LAB`****)** | `esp32_cli connect 192.168.4.1` | `dev = esp32('192.168.4.1')` |
+%[text] | **Check Connection Status** | `esp32_cli status` | `dev.Status()` |
+%[text] | **Search SFR JSON Database** | `esp32_cli sfr GPIO` | `dev.Sfr('GPIO')` |
+%[text] | **Inspect SFR Bitfield Map** | `esp32_cli sfr GPIO_OUT_REG` | `dev.Sfr('GPIO_OUT_REG')` |
+%[text] | **Read Register (Symbolic)** | `esp32_cli reg GPIO_OUT_REG` | `val = dev.Reg('GPIO_OUT_REG')` |
+%[text] | **Write Register (Symbolic)** | `esp32_cli reg RTC_CNTL_STORE0_REG 400` | `dev.Reg('RTC_CNTL_STORE0_REG', 400)` |
+%[text] | **Modify Bitfield (Symbolic)** | `esp32_cli bits GPIO_OUT_REG GPIO2 1` | `dev.Bits('GPIO_OUT_REG', 'GPIO2', 1)` |
+%[text] | **Toggle Built-in LED (GPIO 2)** | `esp32_cli led toggle` | `dev.Led('toggle')` |
+%[text] | **Set / Read Any GPIO Pin** | `esp32_cli pin 4 high` | `dev.Pin(4, 'high')` |
+%[text] | **Read ADC Voltage (****`32..39`****)** | `esp32_cli adc 34` | `raw = dev.Adc(34)` |
+%[text] | **Symbolic Memory Dump** | `esp32_cli dump GPIO_OUT_REG 8` | `vals = dev.Dump('GPIO_OUT_REG', 8)` |
+%[text] | **Flash** **`.ino`** **via USB (Auto)** | `esp32_cli flash path\app.ino --usb` | `esp32().Flash('path\app.ino', '--usb')` |
+%[text] | **Flash** **`.ino`** **via Wi-Fi OTA** | `esp32_cli flash path\app.ino --wifi` | `esp32().Flash('path\app.ino', '--wifi')` |
+%[text] | **Open UDE® MATLAB GUI** | `esp32_cli gui` | `dev.Gui()` |
+%[text] | **Open On-Chip Web Portal** | `esp32_cli web` | `dev.Web()` |
+%[text] | **Disconnect** | `esp32_cli disconnect` | `dev.Disconnect()` |
+%[text] |  |  |  |
+%[text] |  |  |  |
+%[text] |  |  |  |
+%[text:table]
+%[text] 
+
+%[appendix]{"version":"1.0"}
+%---
+%[metadata:view]
+%   data: {"layout":"onright"}
+%---
+%[output:55c74bfa]
+%   data: {"dataType":"text","outputData":{"text":" <strong>esp32_cli<\/strong> CLI-First Workbench for ESP32 (SFR JSON Database, Registers, Pins, ADC, Flash OTA, Web, GUI).\n \n  CONSOLE USAGE (PURE CLI SYNTAX):\n    <strong>esp32_cli<\/strong> scan                              % List COM ports (with Registry & PnP driver info)\n    <strong>esp32_cli<\/strong> debug                             % Run autonomous PowerShell & MATLAB hardware diagnostics\n    <strong>esp32_cli<\/strong> connect COM5                      % Connect via USB Serial or BT Virtual COM port\n    <strong>esp32_cli<\/strong> connect ESP32_BT_BRIDGE           % Connect natively via Bluetooth SPP\n    <strong>esp32_cli<\/strong> connect 192.168.4.1               % Connect via Wi-Fi (ESP32_LAB AP)\n    <strong>esp32_cli<\/strong> status                            % Display chip status and uptime\n    <strong>esp32_cli<\/strong> sfr GPIO                          % Search registers matching 'GPIO' in esp32_sfr.json\n    <strong>esp32_cli<\/strong> sfr GPIO_OUT_REG                  % Show bitfield map of GPIO_OUT_REG from esp32_sfr.json\n    <strong>esp32_cli<\/strong> reg GPIO_OUT_REG                  % Read register by symbolic name (or 0x3FF44004)\n    <strong>esp32_cli<\/strong> reg GPIO_OUT_W1TS_REG 0x00000004  % Write register by symbolic name or hex address\n    <strong>esp32_cli<\/strong> bits GPIO_OUT_REG GPIO2 1         % Modify bitfield by symbolic name from esp32_sfr.json\n    <strong>esp32_cli<\/strong> bits 0x3FF44004 2 2 1             % Modify bits [msb:lsb] numerically\n    <strong>esp32_cli<\/strong> pin 2 toggle                      % Toggle GPIO 2 state\n    <strong>esp32_cli<\/strong> adc 34                            % Read ADC on GPIO 34 (0-4095 and Voltage)\n    <strong>esp32_cli<\/strong> dump GPIO_OUT_REG 8               % Display Hex\/Binary table starting at symbol\/address\n    <strong>esp32_cli<\/strong> flash my_sketch.ino --wifi        % Compile, inject Core0 Web+OTA+BT, and flash over Wi-Fi\n    <strong>esp32_cli<\/strong> flash my_sketch.ino --usb         % Compile and flash via USB\n    <strong>esp32_cli<\/strong> web                               % Open the on-chip Web Register Workbench in browser\n    <strong>esp32_cli<\/strong> gui                               % Open the UDE Workbench graphical interface\n    <strong>esp32_cli<\/strong> disconnect                        % Close the active connection\n\n","truncated":false}}
+%---
+%[output:545ed589]
+%   data: {"dataType":"text","outputData":{"text":" <strong>esp32<\/strong> Lightweight Object-Oriented Facade over the esp32_cli.m engine and esp32_flash.m\n    Usage examples:\n      <strong>esp32<\/strong>().Flash('C:\\Users\\tomas\\MATLAB\\esp32_workbench_v3\\sketches\\beep_fast\\beep_fast.ino')\n      dev = <strong>esp32<\/strong>('192.168.4.1');               % Connect via Wi-Fi\n      dev = <strong>esp32<\/strong>('ESP32_BT_BRIDGE');           % Connect via Bluetooth SPP\n      dev = <strong>esp32<\/strong>('COM8');                      % Connect via USB Serial\n      dev.Pin(2, 'high');                       % Set GPIO 2 HIGH\n      val = dev.Reg('GPIO_OUT_REG');            % Symbolic SFR read via esp32_sfr.json\n      dev.Bits('GPIO_OUT_REG', 'GPIO2', 1);     % Symbolic bitfield write via esp32_sfr.json\n      dev.Web();                                % Open on-chip Web Register Debugger in browser\n\n    <a href=\"matlab:doc esp32\">Documentation for esp32<\/a>\n\n","truncated":false}}
+%---
+%[output:0125afd8]
+%   data: {"dataType":"text","outputData":{"text":"\n====================================================================\n  ESP32 WORKBENCH — AUTONOMOUS POWERSHELL & MATLAB DIAGNOSTICS\n====================================================================\n\n[1\/5] Checking active MATLAB serialport handles...\n  No open serialport objects inside MATLAB.\n\n[2\/5] Querying Windows Registry HKLM:\\HARDWARE\\DEVICEMAP\\SERIALCOMM...\n\\Device\\Serial0   : COM3\n\\Device\\BthModem2 : COM5\n\\Device\\Serial2   : COM8\nPSPath            : Microsoft.PowerShell.Core\\Registry::HKEY_LOCAL_MACHINE\\HARDWARE\\DEVICEMAP\\SERIALCOMM\nPSParentPath      : Microsoft.PowerShell.Core\\Registry::HKEY_LOCAL_MACHINE\\HARDWARE\\DEVICEMAP\nPSChildName       : SERIALCOMM\nPSDrive           : HKLM\nPSProvider        : Microsoft.PowerShell.Core\\Registry\n\n[3\/5] Querying Windows PnP USB \/ UART \/ Serial Devices...\nStatus ConfigManagerErrorCode Name                                                       DeviceID                                                    \n------ ---------------------- ----                                                       --------                                                    \nOK                          0 USB-SERIAL CH340 (COM8)                                    USB\\VID_1A86&PID_7523\\5&2D6A1177&0&5                        \nOK                          0 Intel(R) Active Management Technology - SOL (COM3)         PCI\\VEN_8086&DEV_A0E3&SUBSYS_880D103C&REV_20\\3&11583659&0&B3\nOK                          0 Intel(R) LPC Controller\/eSPI Controller (U Premium) - A082 PCI\\VEN_8086&DEV_A082&SUBSYS_880D103C&REV_20\\3&11583659&0&F8\n\n[4\/5] Running arduino-cli board list...\nPort Protocol Type              Board Name FQBN Core\nCOM3 serial   Serial Port       Unknown\nCOM8 serial   Serial Port (USB) Unknown\n\n[5\/5] Checking Wi-Fi SSID & ESP32_LAB (192.168.4.1) reachability...\nState                  : connected\n    SSID                   : ESP32_LAB\n    AP BSSID               : d4:8c:49:f9:d0:45\nTrue\n====================================================================\n\n","truncated":false}}
+%---
+%[output:6dc2a3a0]
+%   data: {"dataType":"text","outputData":{"text":"\n=== Detected Serial \/ Virtual BT Ports ===\n  COM3     [AVAILABLE] — Intel(R) Active Management Technology - SOL (COM3) [\\Device\\Serial0]\n  COM5     [BUSY     ] — Kernel Device: \\Device\\BthModem2\n  COM8     [AVAILABLE] — USB-SERIAL CH340 (COM8) [\\Device\\Serial2]\n\n","truncated":false}}
+%---
+%[output:7ee75035]
+%   data: {"dataType":"text","outputData":{"text":"[FLASH] Auto-detected physical USB ESP32 port (via arduino-cli): COM8\n[FLASH] Auto-injecting Core-0 Web Register Workbench + Wi-Fi OTA + BT SPP Daemon...\n[FLASH] Compiling with arduino-cli (PartitionScheme=min_spiffs, Max 1.96MB)...\n[FLASH] Compilation successful.\n[FLASH] Flashing via USB on COM8...\n[FLASH] USB flashing completed on COM8!\n","truncated":false}}
+%---
+%[output:1aad0713]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:607|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:62585460]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: SERIAL | Target: COM8 | Response: ESP32_READY|UPTIME_MS:640|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:4be5b9fa]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:585|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:3169df34]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: SERIAL | Target: COM8 | Response: ESP32_READY|UPTIME_MS:612|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:91361d13]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connecting via Bluetooth SPP to \"ESP32_BT_BRIDGE\" (Channel 1)...\n[ESP32] Connected via Bluetooth SPP (ESP32_BT_BRIDGE) -> ESP32_READY|UPTIME_MS:6048|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:7fbc5b19]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: BLUETOOTH | Target: ESP32_BT_BRIDGE | Response: ESP32_READY|UPTIME_MS:6075|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:078fe655]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM11 -> ESP32_READY|UPTIME_MS:7503|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:79b531a4]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: SERIAL | Target: COM11 | Response: ESP32_READY|UPTIME_MS:7533|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:55813cca]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connecting via Bluetooth SPP to \"ESP32_BT_BRIDGE\" (Channel 1)...\n[ESP32] Connected via Bluetooth SPP (ESP32_BT_BRIDGE) -> ESP32_READY|UPTIME_MS:8030|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:2501187d]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: BLUETOOTH | Target: ESP32_BT_BRIDGE | Response: ESP32_READY|UPTIME_MS:8051|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:5c9372a5]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Wi-Fi at http:\/\/192.168.4.1 -> ESP32_READY|UPTIME_MS:9309|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:2c3a6f21]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: WIFI | Target: 192.168.4.1 | Response: ESP32_READY|UPTIME_MS:9353|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:085786d3]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Wi-Fi at http:\/\/192.168.4.1 -> ESP32_READY|UPTIME_MS:9587|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:5722c0ee]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: WIFI | Target: 192.168.4.1 | Response: ESP32_READY|UPTIME_MS:9644|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:8fb8cac8]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Disconnected.\n","truncated":false}}
+%---
+%[output:702cd3f0]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Disconnected.\n","truncated":false}}
+%---
+%[output:4b0d56c1]
+%   data: {"dataType":"text","outputData":{"text":"\n=== ESP32 SFR Database (ESP32_D0WD_V3) ===\n  Total Compiled Registers: 991\n  Usage: esp32_cli sfr <FILTER_OR_REG_NAME>  (e.g., esp32_cli sfr GPIO)\n\n","truncated":false}}
+%---
+%[output:26b25698]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Registers matching \"GPIO\" (402 found) ===\n  DPORT_PRO_GPIO_INTERRUPT_MAP_REG   | 0x3FF0015C |  1 bitfields\n  DPORT_PRO_GPIO_INTERRUPT_NMI_MAP_REG | 0x3FF00160 |  1 bitfields\n  DPORT_APP_GPIO_INTERRUPT_MAP_REG   | 0x3FF00270 |  1 bitfields\n  DPORT_APP_GPIO_INTERRUPT_NMI_MAP_REG | 0x3FF00274 |  1 bitfields\n  DPORT_AHBLITE_MPU_TABLE_GPIO_REG   | 0x3FF00338 |  1 bitfields\n  GPIO_BT_SELECT_REG                 | 0x3FF44000 |  1 bitfields\n  GPIO_OUT_REG                       | 0x3FF44004 | 33 bitfields\n  GPIO_OUT_W1TS_REG                  | 0x3FF44008 | 33 bitfields\n  GPIO_OUT_W1TC_REG                  | 0x3FF4400C | 33 bitfields\n  GPIO_OUT1_REG                      | 0x3FF44010 |  1 bitfields\n  GPIO_OUT1_W1TS_REG                 | 0x3FF44014 |  1 bitfields\n  GPIO_OUT1_W1TC_REG                 | 0x3FF44018 |  1 bitfields\n  GPIO_SDIO_SELECT_REG               | 0x3FF4401C |  1 bitfields\n  GPIO_ENABLE_REG                    | 0x3FF44020 | 33 bitfields\n  GPIO_ENABLE_W1TS_REG               | 0x3FF44024 | 33 bitfields\n  GPIO_ENABLE_W1TC_REG               | 0x3FF44028 | 33 bitfields\n  GPIO_ENABLE1_REG                   | 0x3FF4402C |  1 bitfields\n  GPIO_ENABLE1_W1TS_REG              | 0x3FF44030 |  1 bitfields\n  GPIO_ENABLE1_W1TC_REG              | 0x3FF44034 |  1 bitfields\n  GPIO_STRAP_REG                     | 0x3FF44038 |  1 bitfields\n  GPIO_IN_REG                        | 0x3FF4403C | 33 bitfields\n  GPIO_IN1_REG                       | 0x3FF44040 |  1 bitfields\n  GPIO_STATUS_REG                    | 0x3FF44044 |  1 bitfields\n  GPIO_STATUS_W1TS_REG               | 0x3FF44048 |  1 bitfields\n  GPIO_STATUS_W1TC_REG               | 0x3FF4404C |  1 bitfields\n  GPIO_STATUS1_REG                   | 0x3FF44050 |  1 bitfields\n  GPIO_STATUS1_W1TS_REG              | 0x3FF44054 |  1 bitfields\n  GPIO_STATUS1_W1TC_REG              | 0x3FF44058 |  1 bitfields\n  GPIO_ACPU_INT_REG                  | 0x3FF44060 |  1 bitfields\n  GPIO_ACPU_NMI_INT_REG              | 0x3FF44064 |  1 bitfields\n  GPIO_PCPU_INT_REG                  | 0x3FF44068 |  1 bitfields\n  GPIO_PCPU_NMI_INT_REG              | 0x3FF4406C |  1 bitfields\n  GPIO_CPUSDIO_INT_REG               | 0x3FF44070 |  1 bitfields\n  GPIO_ACPU_INT1_REG                 | 0x3FF44074 |  1 bitfields\n  GPIO_ACPU_NMI_INT1_REG             | 0x3FF44078 |  1 bitfields\n  GPIO_PCPU_INT1_REG                 | 0x3FF4407C |  1 bitfields\n  GPIO_PCPU_NMI_INT1_REG             | 0x3FF44080 |  1 bitfields\n  GPIO_CPUSDIO_INT1_REG              | 0x3FF44084 |  1 bitfields\n  GPIO_PIN0_REG                      | 0x3FF44088 |  3 bitfields\n  GPIO_PIN1_REG                      | 0x3FF4408C |  3 bitfields\n  GPIO_PIN2_REG                      | 0x3FF44090 |  3 bitfields\n  GPIO_PIN3_REG                      | 0x3FF44094 |  3 bitfields\n  GPIO_PIN4_REG                      | 0x3FF44098 |  3 bitfields\n  GPIO_PIN5_REG                      | 0x3FF4409C |  3 bitfields\n  GPIO_PIN6_REG                      | 0x3FF440A0 |  3 bitfields\n  GPIO_PIN7_REG                      | 0x3FF440A4 |  3 bitfields\n  GPIO_PIN8_REG                      | 0x3FF440A8 |  3 bitfields\n  GPIO_PIN9_REG                      | 0x3FF440AC |  3 bitfields\n  GPIO_PIN10_REG                     | 0x3FF440B0 |  3 bitfields\n  GPIO_PIN11_REG                     | 0x3FF440B4 |  3 bitfields\n  GPIO_PIN12_REG                     | 0x3FF440B8 |  3 bitfields\n  GPIO_PIN13_REG                     | 0x3FF440BC |  3 bitfields\n  GPIO_PIN14_REG                     | 0x3FF440C0 |  3 bitfields\n  GPIO_PIN15_REG                     | 0x3FF440C4 |  3 bitfields\n  GPIO_PIN16_REG                     | 0x3FF440C8 |  3 bitfields\n  GPIO_PIN17_REG                     | 0x3FF440CC |  3 bitfields\n  GPIO_PIN18_REG                     | 0x3FF440D0 |  3 bitfields\n  GPIO_PIN19_REG                     | 0x3FF440D4 |  3 bitfields\n  GPIO_PIN20_REG                     | 0x3FF440D8 |  3 bitfields\n  GPIO_PIN21_REG                     | 0x3FF440DC |  3 bitfields\n  ... (342 more registers omitted. Refine your search query)\n\n","truncated":false}}
+%---
+%[output:7ce03bce]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Registers matching \"IO_MUX\" (1 found) ===\n  DPORT_AHBLITE_MPU_TABLE_IO_MUX_REG | 0x3FF0034C |  1 bitfields\n\n","truncated":false}}
+%---
+%[output:9d5288b5]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Registers matching \"LEDC\" (105 found) ===\n  DPORT_PRO_LEDC_INT_MAP_REG         | 0x3FF001B0 |  1 bitfields\n  DPORT_APP_LEDC_INT_MAP_REG         | 0x3FF002C4 |  1 bitfields\n  DPORT_AHBLITE_MPU_TABLE_LEDC_REG   | 0x3FF0038C |  1 bitfields\n  LEDC_HSCH0_CONF0_REG               | 0x3FF59000 |  1 bitfields\n  LEDC_HSCH0_HPOINT_REG              | 0x3FF59004 |  1 bitfields\n  LEDC_HSCH0_DUTY_REG                | 0x3FF59008 |  1 bitfields\n  LEDC_HSCH0_CONF1_REG               | 0x3FF5900C |  3 bitfields\n  LEDC_HSCH0_DUTY_R_REG              | 0x3FF59010 |  1 bitfields\n  LEDC_HSCH1_CONF0_REG               | 0x3FF59014 |  1 bitfields\n  LEDC_HSCH1_HPOINT_REG              | 0x3FF59018 |  1 bitfields\n  LEDC_HSCH1_DUTY_REG                | 0x3FF5901C |  1 bitfields\n  LEDC_HSCH1_CONF1_REG               | 0x3FF59020 |  3 bitfields\n  LEDC_HSCH1_DUTY_R_REG              | 0x3FF59024 |  1 bitfields\n  LEDC_HSCH2_CONF0_REG               | 0x3FF59028 |  1 bitfields\n  LEDC_HSCH2_HPOINT_REG              | 0x3FF5902C |  1 bitfields\n  LEDC_HSCH2_DUTY_REG                | 0x3FF59030 |  1 bitfields\n  LEDC_HSCH2_CONF1_REG               | 0x3FF59034 |  3 bitfields\n  LEDC_HSCH2_DUTY_R_REG              | 0x3FF59038 |  1 bitfields\n  LEDC_HSCH3_CONF0_REG               | 0x3FF5903C |  1 bitfields\n  LEDC_HSCH3_HPOINT_REG              | 0x3FF59040 |  1 bitfields\n  LEDC_HSCH3_DUTY_REG                | 0x3FF59044 |  1 bitfields\n  LEDC_HSCH3_CONF1_REG               | 0x3FF59048 |  3 bitfields\n  LEDC_HSCH3_DUTY_R_REG              | 0x3FF5904C |  1 bitfields\n  LEDC_HSCH4_CONF0_REG               | 0x3FF59050 |  1 bitfields\n  LEDC_HSCH4_HPOINT_REG              | 0x3FF59054 |  1 bitfields\n  LEDC_HSCH4_DUTY_REG                | 0x3FF59058 |  1 bitfields\n  LEDC_HSCH4_CONF1_REG               | 0x3FF5905C |  3 bitfields\n  LEDC_HSCH4_DUTY_R_REG              | 0x3FF59060 |  1 bitfields\n  LEDC_HSCH5_CONF0_REG               | 0x3FF59064 |  1 bitfields\n  LEDC_HSCH5_HPOINT_REG              | 0x3FF59068 |  1 bitfields\n  LEDC_HSCH5_DUTY_REG                | 0x3FF5906C |  1 bitfields\n  LEDC_HSCH5_CONF1_REG               | 0x3FF59070 |  3 bitfields\n  LEDC_HSCH5_DUTY_R_REG              | 0x3FF59074 |  1 bitfields\n  LEDC_HSCH6_CONF0_REG               | 0x3FF59078 |  1 bitfields\n  LEDC_HSCH6_HPOINT_REG              | 0x3FF5907C |  1 bitfields\n  LEDC_HSCH6_DUTY_REG                | 0x3FF59080 |  1 bitfields\n  LEDC_HSCH6_CONF1_REG               | 0x3FF59084 |  3 bitfields\n  LEDC_HSCH6_DUTY_R_REG              | 0x3FF59088 |  1 bitfields\n  LEDC_HSCH7_CONF0_REG               | 0x3FF5908C |  1 bitfields\n  LEDC_HSCH7_HPOINT_REG              | 0x3FF59090 |  1 bitfields\n  LEDC_HSCH7_DUTY_REG                | 0x3FF59094 |  1 bitfields\n  LEDC_HSCH7_CONF1_REG               | 0x3FF59098 |  3 bitfields\n  LEDC_HSCH7_DUTY_R_REG              | 0x3FF5909C |  1 bitfields\n  LEDC_LSCH0_CONF0_REG               | 0x3FF590A0 |  1 bitfields\n  LEDC_LSCH0_HPOINT_REG              | 0x3FF590A4 |  1 bitfields\n  LEDC_LSCH0_DUTY_REG                | 0x3FF590A8 |  1 bitfields\n  LEDC_LSCH0_CONF1_REG               | 0x3FF590AC |  3 bitfields\n  LEDC_LSCH0_DUTY_R_REG              | 0x3FF590B0 |  1 bitfields\n  LEDC_LSCH1_CONF0_REG               | 0x3FF590B4 |  1 bitfields\n  LEDC_LSCH1_HPOINT_REG              | 0x3FF590B8 |  1 bitfields\n  LEDC_LSCH1_DUTY_REG                | 0x3FF590BC |  1 bitfields\n  LEDC_LSCH1_CONF1_REG               | 0x3FF590C0 |  3 bitfields\n  LEDC_LSCH1_DUTY_R_REG              | 0x3FF590C4 |  1 bitfields\n  LEDC_LSCH2_CONF0_REG               | 0x3FF590C8 |  1 bitfields\n  LEDC_LSCH2_HPOINT_REG              | 0x3FF590CC |  1 bitfields\n  LEDC_LSCH2_DUTY_REG                | 0x3FF590D0 |  1 bitfields\n  LEDC_LSCH2_CONF1_REG               | 0x3FF590D4 |  3 bitfields\n  LEDC_LSCH2_DUTY_R_REG              | 0x3FF590D8 |  1 bitfields\n  LEDC_LSCH3_CONF0_REG               | 0x3FF590DC |  1 bitfields\n  LEDC_LSCH3_HPOINT_REG              | 0x3FF590E0 |  1 bitfields\n  ... (45 more registers omitted. Refine your search query)\n\n","truncated":false}}
+%---
+%[output:99c4ae2b]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Registers matching \"RTC_CNTL\" (55 found) ===\n  RTC_CNTL_OPTIONS0_REG              | 0x3FF48000 |  2 bitfields\n  RTC_CNTL_SLP_TIMER0_REG            | 0x3FF48004 |  1 bitfields\n  RTC_CNTL_SLP_TIMER1_REG            | 0x3FF48008 |  1 bitfields\n  RTC_CNTL_TIME_UPDATE_REG           | 0x3FF4800C |  0 bitfields\n  RTC_CNTL_TIME0_REG                 | 0x3FF48010 |  1 bitfields\n  RTC_CNTL_TIME1_REG                 | 0x3FF48014 |  1 bitfields\n  RTC_CNTL_STATE0_REG                | 0x3FF48018 |  0 bitfields\n  RTC_CNTL_TIMER1_REG                | 0x3FF4801C |  4 bitfields\n  RTC_CNTL_TIMER2_REG                | 0x3FF48020 |  2 bitfields\n  RTC_CNTL_TIMER3_REG                | 0x3FF48024 |  4 bitfields\n  RTC_CNTL_TIMER4_REG                | 0x3FF48028 |  4 bitfields\n  RTC_CNTL_TIMER5_REG                | 0x3FF4802C |  4 bitfields\n  RTC_CNTL_ANA_CONF_REG              | 0x3FF48030 |  0 bitfields\n  RTC_CNTL_RESET_STATE_REG           | 0x3FF48034 |  2 bitfields\n  RTC_CNTL_WAKEUP_STATE_REG          | 0x3FF48038 |  2 bitfields\n  RTC_CNTL_INT_ENA_REG               | 0x3FF4803C |  0 bitfields\n  RTC_CNTL_INT_RAW_REG               | 0x3FF48040 |  0 bitfields\n  RTC_CNTL_INT_ST_REG                | 0x3FF48044 |  0 bitfields\n  RTC_CNTL_INT_CLR_REG               | 0x3FF48048 |  0 bitfields\n  RTC_CNTL_STORE0_REG                | 0x3FF4804C |  1 bitfields\n  RTC_CNTL_STORE1_REG                | 0x3FF48050 |  1 bitfields\n  RTC_CNTL_STORE2_REG                | 0x3FF48054 |  1 bitfields\n  RTC_CNTL_STORE3_REG                | 0x3FF48058 |  1 bitfields\n  RTC_CNTL_EXT_XTL_CONF_REG          | 0x3FF4805C |  0 bitfields\n  RTC_CNTL_EXT_WAKEUP_CONF_REG       | 0x3FF48060 |  0 bitfields\n  RTC_CNTL_SLP_REJECT_CONF_REG       | 0x3FF48064 |  1 bitfields\n  RTC_CNTL_CPU_PERIOD_CONF_REG       | 0x3FF48068 |  1 bitfields\n  RTC_CNTL_SDIO_ACT_CONF_REG         | 0x3FF4806C |  1 bitfields\n  RTC_CNTL_CLK_CONF_REG              | 0x3FF48070 |  5 bitfields\n  RTC_CNTL_SDIO_CONF_REG             | 0x3FF48074 |  3 bitfields\n  RTC_CNTL_BIAS_CONF_REG             | 0x3FF48078 |  1 bitfields\n  RTC_CNTL_REG                       | 0x3FF4807C |  5 bitfields\n  RTC_CNTL_PWC_REG                   | 0x3FF48080 |  0 bitfields\n  RTC_CNTL_DIG_PWC_REG               | 0x3FF48084 |  0 bitfields\n  RTC_CNTL_DIG_ISO_REG               | 0x3FF48088 |  0 bitfields\n  RTC_CNTL_WDTCONFIG0_REG            | 0x3FF4808C |  6 bitfields\n  RTC_CNTL_WDTCONFIG1_REG            | 0x3FF48090 |  1 bitfields\n  RTC_CNTL_WDTCONFIG2_REG            | 0x3FF48094 |  1 bitfields\n  RTC_CNTL_WDTCONFIG3_REG            | 0x3FF48098 |  1 bitfields\n  RTC_CNTL_WDTCONFIG4_REG            | 0x3FF4809C |  1 bitfields\n  RTC_CNTL_WDTFEED_REG               | 0x3FF480A0 |  0 bitfields\n  RTC_CNTL_WDTWPROTECT_REG           | 0x3FF480A4 |  1 bitfields\n  RTC_CNTL_TEST_MUX_REG              | 0x3FF480A8 |  1 bitfields\n  RTC_CNTL_SW_CPU_STALL_REG          | 0x3FF480AC |  2 bitfields\n  RTC_CNTL_STORE4_REG                | 0x3FF480B0 |  1 bitfields\n  RTC_CNTL_STORE5_REG                | 0x3FF480B4 |  1 bitfields\n  RTC_CNTL_STORE6_REG                | 0x3FF480B8 |  1 bitfields\n  RTC_CNTL_STORE7_REG                | 0x3FF480BC |  1 bitfields\n  RTC_CNTL_LOW_POWER_ST_REG          | 0x3FF480C0 |  1 bitfields\n  RTC_CNTL_DIAG1_REG                 | 0x3FF480C4 |  1 bitfields\n  RTC_CNTL_HOLD_FORCE_REG            | 0x3FF480C8 |  0 bitfields\n  RTC_CNTL_EXT_WAKEUP1_REG           | 0x3FF480CC |  1 bitfields\n  RTC_CNTL_EXT_WAKEUP1_STATUS_REG    | 0x3FF480D0 |  1 bitfields\n  RTC_CNTL_BROWN_OUT_REG             | 0x3FF480D4 |  2 bitfields\n  RTC_CNTL_DATE_REG                  | 0x3FF4813C |  1 bitfields\n\n","truncated":false}}
+%---
+%[output:6820bd3e]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Definition: GPIO_OUT_REG (0x3FF44004) ===\n  Bitfield Name                | Bits       | Width  | Access\n  -----------------------------+------------+--------+-------\n  GPIO_OUT_DATA                | [31: 0]    | 32     | RW    \n  GPIO0                        | [ 0: 0]    | 1      | RW    \n  GPIO1                        | [ 1: 1]    | 1      | RW    \n  GPIO2                        | [ 2: 2]    | 1      | RW    \n  GPIO3                        | [ 3: 3]    | 1      | RW    \n  GPIO4                        | [ 4: 4]    | 1      | RW    \n  GPIO5                        | [ 5: 5]    | 1      | RW    \n  GPIO6                        | [ 6: 6]    | 1      | RW    \n  GPIO7                        | [ 7: 7]    | 1      | RW    \n  GPIO8                        | [ 8: 8]    | 1      | RW    \n  GPIO9                        | [ 9: 9]    | 1      | RW    \n  GPIO10                       | [10:10]    | 1      | RW    \n  GPIO11                       | [11:11]    | 1      | RW    \n  GPIO12                       | [12:12]    | 1      | RW    \n  GPIO13                       | [13:13]    | 1      | RW    \n  GPIO14                       | [14:14]    | 1      | RW    \n  GPIO15                       | [15:15]    | 1      | RW    \n  GPIO16                       | [16:16]    | 1      | RW    \n  GPIO17                       | [17:17]    | 1      | RW    \n  GPIO18                       | [18:18]    | 1      | RW    \n  GPIO19                       | [19:19]    | 1      | RW    \n  GPIO20                       | [20:20]    | 1      | RW    \n  GPIO21                       | [21:21]    | 1      | RW    \n  GPIO22                       | [22:22]    | 1      | RW    \n  GPIO23                       | [23:23]    | 1      | RW    \n  GPIO24                       | [24:24]    | 1      | RW    \n  GPIO25                       | [25:25]    | 1      | RW    \n  GPIO26                       | [26:26]    | 1      | RW    \n  GPIO27                       | [27:27]    | 1      | RW    \n  GPIO28                       | [28:28]    | 1      | RW    \n  GPIO29                       | [29:29]    | 1      | RW    \n  GPIO30                       | [30:30]    | 1      | RW    \n  GPIO31                       | [31:31]    | 1      | RW    \n\n","truncated":false}}
+%---
+%[output:76890b3d]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Registers matching \"IO_MUX_GPIO2_REG\" (0 found) ===\n\n","truncated":false}}
+%---
+%[output:58f09e0c]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Definition: RTC_CNTL_STORE0_REG (0x3FF4804C) ===\n  Bitfield Name                | Bits       | Width  | Access\n  -----------------------------+------------+--------+-------\n  RTC_CNTL_SCRATCH0            | [31: 0]    | 32     | RW    \n\n","truncated":false}}
+%---
+%[output:1f1c270e]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Definition: GPIO_OUT_REG (0x3FF44004) ===\n  Bitfield Name                | Bits       | Width  | Access\n  -----------------------------+------------+--------+-------\n  GPIO_OUT_DATA                | [31: 0]    | 32     | RW    \n  GPIO0                        | [ 0: 0]    | 1      | RW    \n  GPIO1                        | [ 1: 1]    | 1      | RW    \n  GPIO2                        | [ 2: 2]    | 1      | RW    \n  GPIO3                        | [ 3: 3]    | 1      | RW    \n  GPIO4                        | [ 4: 4]    | 1      | RW    \n  GPIO5                        | [ 5: 5]    | 1      | RW    \n  GPIO6                        | [ 6: 6]    | 1      | RW    \n  GPIO7                        | [ 7: 7]    | 1      | RW    \n  GPIO8                        | [ 8: 8]    | 1      | RW    \n  GPIO9                        | [ 9: 9]    | 1      | RW    \n  GPIO10                       | [10:10]    | 1      | RW    \n  GPIO11                       | [11:11]    | 1      | RW    \n  GPIO12                       | [12:12]    | 1      | RW    \n  GPIO13                       | [13:13]    | 1      | RW    \n  GPIO14                       | [14:14]    | 1      | RW    \n  GPIO15                       | [15:15]    | 1      | RW    \n  GPIO16                       | [16:16]    | 1      | RW    \n  GPIO17                       | [17:17]    | 1      | RW    \n  GPIO18                       | [18:18]    | 1      | RW    \n  GPIO19                       | [19:19]    | 1      | RW    \n  GPIO20                       | [20:20]    | 1      | RW    \n  GPIO21                       | [21:21]    | 1      | RW    \n  GPIO22                       | [22:22]    | 1      | RW    \n  GPIO23                       | [23:23]    | 1      | RW    \n  GPIO24                       | [24:24]    | 1      | RW    \n  GPIO25                       | [25:25]    | 1      | RW    \n  GPIO26                       | [26:26]    | 1      | RW    \n  GPIO27                       | [27:27]    | 1      | RW    \n  GPIO28                       | [28:28]    | 1      | RW    \n  GPIO29                       | [29:29]    | 1      | RW    \n  GPIO30                       | [30:30]    | 1      | RW    \n  GPIO31                       | [31:31]    | 1      | RW    \n\n","truncated":false}}
+%---
+%[output:9c806797]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:671|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:0c4009ae]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:88e35f65]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 0\n","truncated":false}}
+%---
+%[output:2c9aec34]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:854aedb9]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:611|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:297bc3a2]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:2c16ec5b]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 0\n","truncated":false}}
+%---
+%[output:0b758049]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:1f1d9639]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:798f2971]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:8b02e5ad]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 0\n","truncated":false}}
+%---
+%[output:205d0c91]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:667809c7]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 04] -> State: 1\n","truncated":false}}
+%---
+%[output:1ec39d2c]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 04] -> State: 0\n","truncated":false}}
+%---
+%[output:7077c870]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 1\n","truncated":false}}
+%---
+%[output:1ded49e6]
+%   data: {"dataType":"text","outputData":{"text":"  [GPIO 02] -> State: 0\n","truncated":false}}
+%---
+%[output:16edbf77]
+%   data: {"dataType":"text","outputData":{"text":"  [ADC GPIO 34] =  342 \/ 4095 | Linear: 0.276 V | Calibrated (11dB): 0.365 V (365 mV)\n","truncated":false}}
+%---
+%[output:946641dc]
+%   data: {"dataType":"text","outputData":{"text":"  [ADC GPIO 35] = 4095 \/ 4095 | Linear: 3.300 V | Calibrated (11dB): 3.160 V (3160 mV)\n","truncated":false}}
+%---
+%[output:2b9fad3e]
+%   data: {"dataType":"text","outputData":{"text":"  [REG GPIO_OUT_REG (0x3FF44004)] = 0x00000000 (         0) | Bin: 0000_0000_0000_0000_0000_0000_0000_0000\n    Bitfields: (All bitfields = 0)\n","truncated":false}}
+%---
+%[output:1ce7dae9]
+%   data: {"dataType":"text","outputData":{"text":"  [REG GPIO_IN_REG (0x3FF4403C)] = 0x0000CAAB (     51883) | Bin: 0000_0000_0000_0000_1100_1010_1010_1011\n    Non-zero Bitfields: GPIO_IN_DATA=0xCAAB(51883), GPIO0=0x1(1), GPIO1=0x1(1), GPIO3=0x1(1), GPIO5=0x1(1), GPIO7=0x1(1), GPIO9=0x1(1), GPIO11=0x1(1), GPIO14=0x1(1), GPIO15=0x1(1)\n","truncated":false}}
+%---
+%[output:7b0438a3]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_ENABLE_W1TS_REG (0x3FF44024)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:93bba2df]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:5916f1c1]
+%   data: {"dataType":"text","outputData":{"text":"  [REG GPIO_OUT_REG (0x3FF44004)] = 0x00000004 (         4) | Bin: 0000_0000_0000_0000_0000_0000_0000_0100\n    Non-zero Bitfields: GPIO_OUT_DATA=0x4(4), GPIO2=0x1(1)\n","truncated":false}}
+%---
+%[output:2c6ba377]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:26f418cf]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:9618f5c7]
+%   data: {"dataType":"text","outputData":{"text":"  [REG GPIO_OUT_REG (0x3FF44004)] = 0x00000004 (         4) | Bin: 0000_0000_0000_0000_0000_0000_0000_0100\n    Non-zero Bitfields: GPIO_OUT_DATA=0x4(4), GPIO2=0x1(1)\n","truncated":false}}
+%---
+%[output:203ffd18]
+%   data: {"dataType":"text","outputData":{"text":"  [REG GPIO_ENABLE_REG (0x3FF44020)] = 0x00000F94 (      3988) | Bin: 0000_0000_0000_0000_0000_1111_1001_0100\n    Non-zero Bitfields: GPIO_ENABLE_DATA=0xF94(3988), GPIO2=0x1(1), GPIO4=0x1(1), GPIO7=0x1(1), GPIO8=0x1(1), GPIO9=0x1(1), GPIO10=0x1(1), GPIO11=0x1(1)\n","truncated":false}}
+%---
+%[output:99234173]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_ENABLE_W1TS_REG (0x3FF44024)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:8221ca0d]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:08148da8]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:1c1ad8a1]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_ENABLE_W1TS_REG (0x3FF44024)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:13c7998f]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:9a2c1751]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS GPIO_ENABLE_REG.GPIO2 [2:2]] <= 1 -> New Reg: 0x00000F94\n","truncated":false}}
+%---
+%[output:2e847a15]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS GPIO_OUT_REG.GPIO2 [2:2]] <= 1 -> New Reg: 0x00000004\n","truncated":false}}
+%---
+%[output:2cbfa15d]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS GPIO_OUT_REG.GPIO2 [2:2]] = 1 (0x1)\n","truncated":false}}
+%---
+%[output:6aea4498]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS GPIO_OUT_REG.GPIO2 [2:2]] <= 0 -> New Reg: 0x00000000\n","truncated":false}}
+%---
+%[output:79ef7b10]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS 0x3FF44004 [2:2]] <= 1 -> New Reg: 0x00000004\n","truncated":false}}
+%---
+%[output:72dbbe08]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS 0x3FF44004 [2:2]] <= 0 -> New Reg: 0x00000000\n","truncated":false}}
+%---
+%[output:3300fe72]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS GPIO_OUT_REG.GPIO2 [2:2]] <= 1 -> New Reg: 0x00000004\n","truncated":false}}
+%---
+%[output:17e53799]
+%   data: {"dataType":"text","outputData":{"text":"  [BITS 0x3FF44004 [2:2]] <= 0 -> New Reg: 0x00000000\n","truncated":false}}
+%---
+%[output:229b5032]
+%   data: {"dataType":"text","outputData":{"text":"\n  Address     | SFR Symbol Name              | Hexadecimal | Binary (31..0)\n  ------------+------------------------------+-------------+------------------------------------\n  0x3FF44000  | GPIO_BT_SELECT_REG           | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44004  | GPIO_OUT_REG                 | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44008  | GPIO_OUT_W1TS_REG            | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF4400C  | GPIO_OUT_W1TC_REG            | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44010  | GPIO_OUT1_REG                | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44014  | GPIO_OUT1_W1TS_REG           | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44018  | GPIO_OUT1_W1TC_REG           | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF4401C  | GPIO_SDIO_SELECT_REG         | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n\n","truncated":false}}
+%---
+%[output:05e40939]
+%   data: {"dataType":"text","outputData":{"text":"\n  Address     | SFR Symbol Name              | Hexadecimal | Binary (31..0)\n  ------------+------------------------------+-------------+------------------------------------\n  0x3FF44004  | GPIO_OUT_REG                 | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44008  | GPIO_OUT_W1TS_REG            | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF4400C  | GPIO_OUT_W1TC_REG            | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44010  | GPIO_OUT1_REG                | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44014  | GPIO_OUT1_W1TS_REG           | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44018  | GPIO_OUT1_W1TC_REG           | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n\n","truncated":false}}
+%---
+%[output:983cfaf2]
+%   data: {"dataType":"text","outputData":{"text":"\n=== Detected Serial \/ Virtual BT Ports ===\n  COM3     [AVAILABLE] — Intel(R) Active Management Technology - SOL (COM3) [\\Device\\Serial0]\n  COM5     [BUSY     ] — Kernel Device: \\Device\\BthModem2\n  COM8     [BUSY     ] — USB-SERIAL CH340 (COM8) [\\Device\\Serial2]\n  COM10    [AVAILABLE] — Standard Serial over Bluetooth link (COM10) [\\Device\\BthModem1]\n  COM11    [AVAILABLE] — Standard Serial over Bluetooth link (COM11) [\\Device\\BthModem0]\n\n","truncated":false}}
+%---
+%[output:31cf72dd]
+%   data: {"dataType":"text","outputData":{"text":"[FLASH] Closing open MATLAB serial handle on COM8...\n[FLASH] Auto-injecting Core-0 Web Register Workbench + Wi-Fi OTA + BT SPP Daemon...\n[FLASH] Compiling with arduino-cli (PartitionScheme=min_spiffs, Max 1.96MB)...\n[FLASH] Compilation successful.\n[FLASH] Releasing port COM8 in MATLAB to allow USB flashing...\n[FLASH] Flashing via USB on COM8...\n[FLASH] USB flashing completed on COM8!\n[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:673|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:4d684dee]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:591|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:65d64f8e]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: SERIAL | Target: COM8 | Response: ESP32_READY|UPTIME_MS:609|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:64ba5364]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:592|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:71648bbd]
+%   data: {"dataType":"text","outputData":{"text":"  [REG RTC_CNTL_STORE0_REG (0x3FF4804C)] = 0x00000BB8 (      3000) | Bin: 0000_0000_0000_0000_0000_1011_1011_1000\n    Non-zero Bitfields: RTC_CNTL_SCRATCH0=0xBB8(3000)\n","truncated":false}}
+%---
+%[output:32aafa4f]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x00000190 (Readback: 0x00000190)\n","truncated":false}}
+%---
+%[output:21d2f103]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x00000078 (Readback: 0x00000078)\n","truncated":false}}
+%---
+%[output:2009a4f2]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x00000BB8 (Readback: 0x00000BB8)\n","truncated":false}}
+%---
+%[output:656f03c9]
+%   data: {"dataType":"text","outputData":{"text":"[FLASH] Closing open MATLAB serial handle on COM8...\n[FLASH] Auto-injecting Core-0 Web Register Workbench + Wi-Fi OTA + BT SPP Daemon...\n[FLASH] Compiling with arduino-cli (PartitionScheme=min_spiffs, Max 1.96MB)...\n","truncated":false}}
+%---
+%[output:0a6ca9c7]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:592|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:9cbe403b]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x00000BB8 (Readback: 0x00000BB8)\n","truncated":false}}
+%---
+%[output:6b627709]
+%   data: {"dataType":"text","outputData":{"text":"=== 1. Connecting to ESP32 ===\n","truncated":false}}
+%---
+%[output:05112290]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:591|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:11d4665d]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Mode: SERIAL | Target: COM8 | Response: ESP32_READY|UPTIME_MS:609|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:458d69dc]
+%   data: {"dataType":"text","outputData":{"text":"\n=== 2. Inspecting GPIO_OUT_REG Bitfield Map from esp32_sfr.json ===\n","truncated":false}}
+%---
+%[output:87ce2086]
+%   data: {"dataType":"text","outputData":{"text":"\n=== SFR Definition: GPIO_OUT_REG (0x3FF44004) ===\n  Bitfield Name                | Bits       | Width  | Access\n  -----------------------------+------------+--------+-------\n  GPIO_OUT_DATA                | [31: 0]    | 32     | RW    \n  GPIO0                        | [ 0: 0]    | 1      | RW    \n  GPIO1                        | [ 1: 1]    | 1      | RW    \n  GPIO2                        | [ 2: 2]    | 1      | RW    \n  GPIO3                        | [ 3: 3]    | 1      | RW    \n  GPIO4                        | [ 4: 4]    | 1      | RW    \n  GPIO5                        | [ 5: 5]    | 1      | RW    \n  GPIO6                        | [ 6: 6]    | 1      | RW    \n  GPIO7                        | [ 7: 7]    | 1      | RW    \n  GPIO8                        | [ 8: 8]    | 1      | RW    \n  GPIO9                        | [ 9: 9]    | 1      | RW    \n  GPIO10                       | [10:10]    | 1      | RW    \n  GPIO11                       | [11:11]    | 1      | RW    \n  GPIO12                       | [12:12]    | 1      | RW    \n  GPIO13                       | [13:13]    | 1      | RW    \n  GPIO14                       | [14:14]    | 1      | RW    \n  GPIO15                       | [15:15]    | 1      | RW    \n  GPIO16                       | [16:16]    | 1      | RW    \n  GPIO17                       | [17:17]    | 1      | RW    \n  GPIO18                       | [18:18]    | 1      | RW    \n  GPIO19                       | [19:19]    | 1      | RW    \n  GPIO20                       | [20:20]    | 1      | RW    \n  GPIO21                       | [21:21]    | 1      | RW    \n  GPIO22                       | [22:22]    | 1      | RW    \n  GPIO23                       | [23:23]    | 1      | RW    \n  GPIO24                       | [24:24]    | 1      | RW    \n  GPIO25                       | [25:25]    | 1      | RW    \n  GPIO26                       | [26:26]    | 1      | RW    \n  GPIO27                       | [27:27]    | 1      | RW    \n  GPIO28                       | [28:28]    | 1      | RW    \n  GPIO29                       | [29:29]    | 1      | RW    \n  GPIO30                       | [30:30]    | 1      | RW    \n  GPIO31                       | [31:31]    | 1      | RW    \n\n","truncated":false}}
+%---
+%[output:0c593dce]
+%   data: {"dataType":"text","outputData":{"text":"\n=== 3. Toggling Built-in LED (GPIO 2) via Atomic W1TS \/ W1TC Registers ===\n","truncated":false}}
+%---
+%[output:7fba8043]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_ENABLE_W1TS_REG (0x3FF44024)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:4431df3b]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:438e52d7]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:485fb4da]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:2162974a]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:03228bcf]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:54e4f3ff]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:734ea4d1]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:2cd95e60]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:6b9f35fe]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:54d4ba8c]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:40322556]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TS_REG (0x3FF44008)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:2eafe4ac]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE GPIO_OUT_W1TC_REG (0x3FF4400C)] <= 0x00000004 (Readback: 0x00000000)\n","truncated":false}}
+%---
+%[output:60ec1889]
+%   data: {"dataType":"text","outputData":{"text":"\n=== 4. Sweeping Dynamic Beep Period via RTC_CNTL_STORE0_REG (0x3FF4804C) ===\n","truncated":false}}
+%---
+%[output:762fb676]
+%   data: {"dataType":"text","outputData":{"text":"  -> Setting RTC_CNTL_STORE0_REG = 800 ms\n","truncated":false}}
+%---
+%[output:35135f9a]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x00000320 (Readback: 0x00000320)\n","truncated":false}}
+%---
+%[output:169a9de0]
+%   data: {"dataType":"text","outputData":{"text":"  -> Setting RTC_CNTL_STORE0_REG = 400 ms\n","truncated":false}}
+%---
+%[output:64f04475]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x00000190 (Readback: 0x00000190)\n","truncated":false}}
+%---
+%[output:520bc438]
+%   data: {"dataType":"text","outputData":{"text":"  -> Setting RTC_CNTL_STORE0_REG = 200 ms\n","truncated":false}}
+%---
+%[output:46b3353f]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x000000C8 (Readback: 0x000000C8)\n","truncated":false}}
+%---
+%[output:39d8d8e5]
+%   data: {"dataType":"text","outputData":{"text":"  -> Setting RTC_CNTL_STORE0_REG = 100 ms\n","truncated":false}}
+%---
+%[output:8f63e6be]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x00000064 (Readback: 0x00000064)\n","truncated":false}}
+%---
+%[output:56a82a8d]
+%   data: {"dataType":"text","outputData":{"text":"  -> Setting RTC_CNTL_STORE0_REG = 1000 ms\n","truncated":false}}
+%---
+%[output:56df40db]
+%   data: {"dataType":"text","outputData":{"text":"  [WRITE RTC_CNTL_STORE0_REG (0x3FF4804C)] <= 0x000003E8 (Readback: 0x000003E8)\n","truncated":false}}
+%---
+%[output:40b772f9]
+%   data: {"dataType":"text","outputData":{"text":"\n=== 5. Dumping GPIO Peripheral Memory Block ===\n","truncated":false}}
+%---
+%[output:960c4171]
+%   data: {"dataType":"text","outputData":{"text":"\n  Address     | SFR Symbol Name              | Hexadecimal | Binary (31..0)\n  ------------+------------------------------+-------------+------------------------------------\n  0x3FF44004  | GPIO_OUT_REG                 | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44008  | GPIO_OUT_W1TS_REG            | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF4400C  | GPIO_OUT_W1TC_REG            | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44010  | GPIO_OUT1_REG                | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44014  | GPIO_OUT1_W1TS_REG           | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44018  | GPIO_OUT1_W1TC_REG           | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF4401C  | GPIO_SDIO_SELECT_REG         | 0x00000000  | 0000_0000_0000_0000_0000_0000_0000_0000\n  0x3FF44020  | GPIO_ENABLE_REG              | 0x00000F94  | 0000_0000_0000_0000_0000_1111_1001_0100\n\n","truncated":false}}
+%---
+%[output:815b5ce0]
+%   data: {"dataType":"text","outputData":{"text":"[ESP32] Connected via Serial on COM8 -> ESP32_READY|UPTIME_MS:582|IP:192.168.4.1|BT:ESP32_BT_BRIDGE\n","truncated":false}}
+%---
+%[output:2be79713]
+%   data: {"dataType":"image","outputData":{"dataUri":"data:image\/png;base64,iVBORw0KGgoAAAANSUhEUgAAAjAAAAFRCAYAAABqsZcNAAAQAElEQVR4AeydD4gVWX7vzwQXu0270w7T\/usZtjXCvI2j8kKcbTJhTIiGCUvwIQwbfULvDnlGyUAkMQNDMOkwBGFVGGEHxQUnHWaVZUDGwPIkGrJKDO0asti+3TDgag\/+t4dRpnu7W1aYd79nPHeqq+veW7dv1a06VR\/xdJ0659Q5v9\/nd27V91ade++vfc4\/CEAAAhCAAAQg4BmBXzP8gwAEIAABCECgSQI0z5oAAibrCDA+BCAAAQhAAAJNE0DANI2MAyAAAQhkTwALIFB2AgiYss8A\/IcABCAAAQh4SAAB42HQMBkC2RPAAghAAALZEkDAZMuf0SEAAQhAAAIQmAMBBMwcoHFI9gSwAAIQgAAEyk0AAVPu+Gfm\/Z49e8zKlSvN2bNna9oQp03Ng2NUHDlyxNogO6KS6oPdXLlyxaxbt656zIYNG8z9+\/erTZy94b50jI51DScmJsy2bduq\/SivMlevrcYO9lOPk9q75GyI6lO2yuZgvy4f1V59ym7Z79ppK9tUF06uf42hfLg+vC+f1F8wqSzcjv36BFzMgxzDMYpqo\/aKrWKsERQzxS5YpnKlqOPjxEptNI5L2ld\/LrkxXb3GcXVsIdCIAAKmEaHIegrLRkAn+e3bt5vx8fGq6zdu3DCvvfbaDBFTrQxkdIyOVR8qHhwcNMPDw8rapPyOHTuMEzG6+Hz3u9+1de6P6sMnf1fntur\/zJkzdvdnP\/uZuX79us3H+SMbvvnNb87wRXZs3rx5hs\/qS7ZFCR6Vi4naNEq6UMmncDuVqS5c3uq++mzEr9Ux2n28u\/ifPHly1tCKRVSMwg3DczNcX2+MRrHSfPyrv\/qrGV3qGBcHzffdu3eb4JyRL4rVjIPYgUANAgiYGmAozp7AgQMHzLVr18zGjRtTNebNN9+042isYNq5c2d13AsXLtgL+ZYtW2xbXfCff\/55e\/IdGRmptlPm6NGjto36Ul1\/f789Vn3ognDp0iWzcOFCc+rUKStk1I8THDqpnz9\/Xt0Y14\/GVMHp06e1qZnUvy5Iaq\/t0NBQZFuNJ\/tln5LyKtOFRBcQHaSLz+HDh5Wt2qG2YqVCHaOkvGzWxdIdq7J6SRcwtXUM1K+S7NZxEmEaX\/lWU7O2tTpeu46XX+7ir\/mleSaGSlExcna5OaV2OkbHaq5o7rg2wa2EkOaF5ofireOU1I\/aKY6Kp\/LhpD7Vt+KqY5xdbh5LYGveu771etCc0OtDr5Nwf+wXhECCbiBgEoRJV8kS0Dsx3VrWCVJJeZW5UXSSC9\/ydu3UVkl3EVz7JLbu5Lp48WJz7tw5K1TqCayuri7zyiuv2KGvXr1q3HGXL182a9asseX6093dbZYsWWLvmriT+tq1a1VlXn31Vbut90cXNAkfXQz+\/M\/\/3PRXRJOztd5xqpNN3\/ve96yoUh\/qy118dNEJ+idRpwuSK1dbvavWxe25556zfajPesldwA4ePDiDge5Mye5guYSMHmkoli65mLr4aw784Ac\/qD6S077qgrbJHtkpoTU6OmrURkntVKe2qtNYGlNJeZX92Z\/9me1bebWbyxzTvHX2a+t80NjBsT788EM7ltpofNWpTTgFL\/7vvPOO0TxzbXS3TxxdjFx5eKtjgnMzXC82mkMSFZofmieujeaE+te+i6fywaS5IuGiNyLB8lWrVtldzX+9DvQ6Cvbd29trFixYYNvwBwL1CCBg6tGhLjcEdDHXxVknVJ1YZZjeQerd4aZNm+yFUBcWXaRU55LeQQYvFq48uFUbXTCCKXzxePnll+3FWePp4uAuZsF+ovK64EkUqM6duJVXkr3qS33u3bvXipuok7q7QNQTMu6Ctn79erNixQormtSv3iFrrEZJ4kki6tatW2ZyctJIbOmYsM0q0wVJFyflXdI78nfffdft1tyKx+3bty1LjRlsqAvq8ePHq3fcFOc33njD3r0KttOdoeCFXX6Kn2ujfT3a++STT1zRnLcSZrojpA6WL19u75g1M8fkr+ZKOA6acxI16tcljfWXf\/mXbtf6vW\/fvuqjxWpFJXPv3j1br3gHL\/6VKitmxDEcI9UFk2yrNTfVzr2+Vq9ebeeUyoLJvSaCr8lgvctrHDGQz5rvEliuzm31GtXjSu2\/9dZb1gflU0h0WSACCJgCBbPIrugkrZO1Lk46scrX4IVdJ8ljx46puPrIQxcEiZ4TJ07MWNthGzX5R8JCdwbcYepboip8EVK9LnBODKmN2updrE74qnfJiQTty3b5oHww6cSui59O\/ErBumBej4t0u96JHN0lke+6QEX1Gzw2mH\/48KEZHR01EhnB8lr5sOio1c6VSxxJJLn9elvFXO\/O9S5eSXEXA\/mpC3jwWN0NUBuxlt+aJ5ofElY6Rm2V14W92Xf3Ok596w6R4uT6Upkbr9YcU72S4q9HJDpGW+1LGAWFWLBfjal9sRIz5YMpOHdcufqS8HZzT1vNH1evbdy5qbaNkgSoRG+jdrJffqidWCgpH0zOH8VWczlYRx4CtQggYGqRoTx3BAYGBuw7d12Y9O5c7\/x0sZJICJ4k3UlaFy5dyHRRDl\/wgs65i58uLi7p1rZES7CdbpurXuLAlUtchC8Srs5tZaMuVuH+9A7Z9aeT+vvvv+8OsVv1q3etOj78mMA2ePLHsdBu2Hc9jtLdGdX5miTA9A5ecRansB\/i42Ii0bN161bbxF0U7c4c\/6hvjavD5zLHnA27du2ydwlNpSPNA9011MVaj+oqRfZ\/cCyNqX1bEfEn6s5YRLOGRRojam42PLDSQK8pvbYq2br\/FRMJUSfc3n777VlvKHRXzwlUvaZ0d7Jup1RCoEIAAVOBwH8\/COjRiG5nS7jopCtxorsyOkG20wOdbJ3w0LjuIqW8kt49q94lnbydjTox652xLsi6MKu9u2sS7CcoXj744AP7eElto5JO\/GIRVaeLZJx3tO5ipHfUfX199hGU+pNY1DaYdNdJ9gXL4ubFQTGTXcGLt44XD3ERI+1LmGmdij4dJQEnPyVKVZdE0sVXfquvoDjRvkvtXI\/RzFi6+6G7OHotiJPslTCS8Na8kyhXWTjVm5vhtk5E1RLBip\/iqHgqrsHjXSw111083evXcdccUr3mk47V3bx6a3LUhgSBIAEETJAG+VwTcCc4Xay15kEncN2VkdF6LKALgPLhk7RO6jq5q24uKepkrH7m8i7YXXiCFwUnElx\/OuHrzov8Cy+e1Ljh5I4P+627FXqHHbjIhQ+1+\/JPay10MdLdC12M9LhL44ffDcs2lck+5W0HTf5xgi28lkV3oGSzPnqrxyEaR7F2F8haIkNt1FZmyBc9NlNePDVntHZF++Ekf52AkThSP+E2wf25zDHZoD6Cvso3CXDxFWfVN5ucGJDNWu\/jRIz6Uf8aT\/lWkuaB2IuT1q2oX9efYq85oH0XT+VdCnJ381N3AjXvJZL1OnBs3PwMx871xRYCtQggYGqRobwtBNwjD70Tc0nvuoMn5KAhOuHrxK8y3Y3RiVx5nTBff\/11ZU24T72r18nRVkb80YnYjR3cuuPUt3tnGOxbx6m7qBO4yqOShJR7fKBFixpPF18JDT0Gkd+6xa5jdeFwbdTOvVNVnUu6qOhiqOP1jtmVa+suQLrIaQyVKWlfdzLUp5KOk3BQH7JBbWSnHnsoH\/RZeZXpeCXlm016FKdxwv45nuKj8d0FTrbLTo0n26PG07FqE+WLay\/bFdPPP\/\/cOLGrMh2nrWtXa6t50Owck81KQV8VU+07P2uNV69ctuiulGImJhpDfii5\/vU60eulXj+N6nQnR2PIXvWr\/pUcL8VR8YzqR28uZIOLn45XP04ky2YlZ7+LncqUovqkDAJBAgiYIA3y6RJIoHdd2HTiV1cSFTqRK6+kE6nuQijvkk6EKgu2c3XNbLVeRf2Ej1GZxg2X19vXIyid+F0bXSDcY6I4dwLccdrWu42veieudFdCdzBUFpVkT\/BRl9rIZ7duQfsu6aKmxbCtMBUDsXN9uq3KVKd9cZVdyispr3rl3bt65cVP5bpYun3HU\/uOgfJaTPrUU08Zd\/FXmZL76Lny9ZJs0ljBNvXmmBiJlWwPHiOGzs9geTN5CVTFTH2Fj1NZq3ce1acbI2y\/6sShng96requmouLjpFdmlfKi436ED\/tKymvMtVpnwSBegQQMPXoUJcaAZ349Kw+KumkrBOna6OLRtAQV+5OhME6tQ32qYtHrZOhjg+2DefDx4b7VnuVufGdXcEyVxfeurbqw\/mrNjpWZVFJx6hNMDkfourUzvUnX7S2RWPF7VvH6yKkC2HwGI2punBybTWG4heuD+8724J9qyzYTn65euVVr33lg+307t3ZGR7fHaPjXJ3sU15lSnpsJUbqQ34oKa+y8PwJ9qdjo9oEbVNe9qqtS0GGUWM5+2Sj8uqjVlJfrl+3VVmwvRtftgfLg3mNo\/Hkt2wK1rnjXf\/a1uvLHat+1J\/aK4XtElvxU52S8ipzx7OFQD0CZRIw9ThQBwEIQAACEICARwQQMB4FC1MhAAEIQAAC7SeQzxERMPmMC1ZBAAINCLhHHnrsoXyD5lRDAAIFI4CAKVhAcQcCEIBA0QjgDwSiCCBgoqhQBgEIQAACEIBArgkgYBqE5+bNm+bQoUNG2wZNvap+\/PixefDggdHWK8MbGCt\/8KsBpBxV+xGvuQErqm\/4Nbf5kNVRRY2XeCJgRKFOknApqoDRV3prctdx37sq+YNf\/oStqPFSBIrqG34puv6kosZLEUDAiAIJAjkmgGkQgAAEIDCbAAJmNpNcl4x+Om3+8dId8\/uH\/6vp9Pf\/cj3XvuXFuFYYzyUucY75o\/d+brZ+eMds+v5I03GP03872jD\/5jbD8zYfizAX3XxnTs5tTublKARMXiIRww6dyPTC+84P\/9v8+BcPm06DFQGz4h\/+I8ZIwSblyrfKeC5xiXvMxVvT5t8\/nmg67nH7T7sd86\/511Je56Pvc9HNdeZk83MyT0cgYPIUjTq26ET2nR\/+3Iw+mK7TqnGVjkfERHNKinF075SKAPNPFOIl5mM8Tq22Yk62SjC743MvYLJDk6+Rf\/yLB\/addxJW6QWrx1BJ9FWkPpJkXCQuSfvC\/ItHlPkYj1MSrZiTSVBsfx8ImPYzn9OIQ\/95Z07H1TpIJ8dadWUtT5pxWTnG8ftc5RFonHZlbsN8bG\/0C3hObC\/ADEZDwGQAPQ9DXvh4Ig9mYENJCXCxKGngc+w258QcB6eGaQiYGmDyVty3qDNRk3q\/Oi\/R\/orQWdKMi8AkLR\/6nulIq+vC9Ov9fPQsEpwTPQtYxVwETAWCD\/83\/EZ3omZ++7eXJdpfETpLmnERmKTlwwDzryFa5mNDRIk24JyYKM62dIaAaQvm1gf59vpl5vcSEjF9izqM+mvdqmL1ICZJMS4WmWS9adP8S9boDHpjPrYPOnOyfayTHAkBkyTNlPt671u\/2bKI0Qv133b9VsqW+tt9Pyo+xQAAEABJREFUEoz99T59y5l\/zTFmPjbHay6tmZNzoZaPYxAw+YhDLCu0bkDiY\/APV1gho7sF9ZJemK5jtXvvW1831\/\/md4z6ceVsZxIQGzEO3k4WR\/FrKlXuliXZ\/ne\/1mW+0dsRK+5JjttqX46uGDL\/HI34Wzcf9ZoXQ3dkq3Fp5Xhf56LzOchRXDknulnl3xYB41\/MzN9VBIwuso3Se3\/y9ap3WnOgW9LVAjJ1CQysX1qtF7dGrNOuP\/N\/1poT\/2uZ+b\/f+U2T9lhJ9q+LhgMpji7PtjkCes0ruaOUTzJOzfTl61x0Pv7ebyxyGI3Oi9UdMt4RQMB4F7JYBtMIAhCAAAQgUGgCCJhChxfnIAABCEAgSECP5YL75P0lkI6A8ZcHlkMAAhCAAAQg4AEBBIwHQcJECPhOQL8147sP2A+BdhBgjPgEEDDxWdGypAS+tohvjS1p6HEbAhDIMQEETI6Dg2kQgAAE2kuA0SDgDwEEjD+xwlIIQAACEIAABJ4QQMA8AcEGAhDIngAWQAACEIhLAAETlxTtIAABCEAAAhDIDQEETG5CgSHZE8ACCEAAAhDwhQACxpdItWjnxw+mW+yBwyEAAQhAAAL5IVBKATMxMWG2bdtmVq5cadOePXtyERGMgAAEIAABCEAgHoFSCpjBwUGzfPlyc+3aNTM8PGwuXbpkjhw5Eo8YrSAAAQhAAAIQyJxAQMBkbkvbDDhw4IBR0oCLFy8269evN1evXtUuCQIQSJBA36LOBHsrd1c8Bi53\/PF+NoFSCpgghvv379s7MK+++mqwmDwEIAABCEAgHgFaZUKg1AJGa1\/6+\/tNb2+v0TaTCDAoBCAAAQhAAAJNEyi1gNFjJK2D0XqYHTt2GC3urUXw4sWLdr2M1syMjo6a6enp3KfHjx9X3flVJR+2+dGjR2Zqair3foTtbrSfhF9Bdso3GrMd9Un41Q47g2No3rlJGCwP5n30K2h\/vXySvtVh2fbXcJJ+1eOXRt1MjjPPfz77VY+VzmHudVikbakFjAvkwMCAuXnzprl+\/bormrU9dOiQ\/eSSPr00NDRk7ty5k\/s0NvZJ1Y+J8fEZ9t69e9eMjY2Ze\/fuzSj3wa96NiblV5Ddw4cPM2eUlF\/12KVRNz09VZ2DUf376leUL+GypH3Ta9jBfPAguzmZtF9hbmnvBzmOffJJ9bXtu1+1uMmvyclJN3UKtUXAVMKpi\/hTTz1llixZUtmL\/r9\/\/35z\/PhxmyR4li1bZvKeFi3qrjrTtXDhDHvla09Pj1m6dOmM8rz71Mi+pPwKsuvu7s6cUVJ+NeI3p\/o6r4WOji8X8Ub17atfUb6Ey5L2Ta9h94Lu6Xk2szmZtF9hbmnvz+D47JccfferFjf5tWDBAjd1CrUtpYDR2hclRVKPjY4dO2Y\/iaRPJKksKrl1Mlor09fXZzo6OnKf\/seyRVVXvjJv3gx7Ozs7zfz582eU+eBTIxuT9Ms8+TcvxK6RDWnUJ+lXGvbV6lPz7gnGyLnmq1+1\/A2WJ+1bkGWWczJpv4LM2pEPcuyoCOyOJ+dy3\/1yfoS38kvzxb0Oi7QtpYDR98Dcvn3bfond2rVrbTxVZjP88Y0A9kIAAhCAQAkJlFLAdHV12UdBWsCrpEdDKith\/HEZAhCAAAQg4CWBUgqYRCNFZxCAAATaTIAvCGwzcIbLJQEETC7DglEQgAAEIACBYhNo1TsETKsEOb6QBEY\/nS6kXzgFAQhAoCgEEDBFiSR+QAACEIBAEwRo6jsBBIzvEcR+CEAAAhCAQAkJIGBKGHRchgAEsieABRCAQGsEEDCt8eNoCEAAAhCAAAQyIICAyQA6Q0IgewJYAAEIQMBvAggYv+OH9RCAAAQgAIFSEkDAlDLs2TuNBRCAAASyJjD6YCprExi\/BQIImBbgcSgEIBCfAN+tE58VLSEAgcYESipgGoOhBQQcgb5nOlyWLQQgAAEI5IQAAiYngcAMCEAAAhCAQO4J5MhABEyOgpGmKdy+T5MufUMAAhCAQLsJIGDaTZzxIAABCEBgrgQ4DgJVAgiYKgoyEIAABCAAAQj4QgAB40uksBMCEMieABZAAAK5IYCAyU0oMAQCEIBAbQKsY6vNhppyEkDAlDPueO0nAayGAAQgAIEnBBAwT0CwgQAEIAABCEDAHwIIGH9ilb2lWACBJgnwJYBNAqM5BCAQmwACJjYq\/xpy8fAvZlgMAQhAAALxCPgkYOJ5RCsIQAACEIAABApPAAFT+BDjIAQgAAEIlJtAMb1HwBQzrngFAQhAAAIRBL62iB9njcDiZRECxsuwYTQEIAABfwhgKQTSIICASYMqfUIAAhBIkQAL9FOES9feEEDAeBMqDIUABOZGgKMgAIEiEkDAFDGq+AQBCEAAAhAoOAEETMEDjHvZE8ACCEAAAhBInkBhBMz9+\/fNhg0bzMqVK23atm2bmZiYiCSmctW7ttru2bMnsi2FEIAABCAAAQjkj0AhBIwEye7du83WrVvNtWvXzMjIiCU9ODhot+E\/k5OTZnx83Jw6dcq21zEHDhwINyvIPm5AAAIQgAAEikegEAKmq6vLHD9+3OzcudNGSPuvvPKKuX37duRdmHv37tl2S5YssVv+QCBM4OMH0+Ei9iEAAQhAIEcEUhcwOfK1aooEzGeffVbdJwMBCEAAAhCAgF8ECilgtB7mxIkTRndhdDcmHJKrV6+aGzdumP7+frteRmtndEy4XXD\/4sWLZnh42KbR0VEzPT3tRXI+\/Orx41n2Pnr0yExNTc0q98W3WnYm4Zd4OXa1xml3eRJ+tdvmmRyj55qPfsXlmKRvM1lme\/5J0q+4LJNq97hyLqz12s6ZX4mdm4M+O9+LsC2cgHHrYXp7e8327dsjYyQBI\/GitTJa\/7J+\/XqjNTQ6NvKASuGhQ4eMFv4qDQ0NmTt37niRKqbb\/9PTUzPsvXv3rhkbGzO6G+WLL3HsTMqvifFxy01\/Hjx4OINdHDuSbpOUX0nb1ai\/IMexTz6ZxdFXvxr5rfqkfdNrWPNRSf1nlZL2q91+PHz4UAhtCr62fferFkf5pXWf1uGC\/SmUgJEA2bFjhw3R0aNHTdTdF1Vqwa7WzLj6gYEBc\/PmTXP9+nVVR6b9+\/fbdTY6Tu2XLVtmfEjOmY6Ozhn2av1PT0+PWbp06YxyH3yqZ2NSfnUtXOjQmZ6eZzNnlJRf9dilUTeD47OzOfrqVxxWSfvWUXkNu0kZZ\/yW29Q4xyXtV1p21uq3u7vbYZzx2vbdr1r+yq8FCxZUfS5SpjACxomX5cuXW6HhxEncYD399NNGga7VXnd0dNdGqa+vz3R0dHiRnD9fmTdvhr2dnZ1m\/vz5M8p88amenUn5JV7myb95IXb1xk+rLim\/0rKvVr9Bjh2VC3BH6HXjq19hP6L2k\/ZtJsvszj9J+xXFLs0yvZ6fvLSN8m4s3\/1yfoS38kt+Op+LtC2MgHEfmXbbWkGS0NFjoCNHjtgm2t+3b5954YUXzOLFi20ZfyAAgcwJYAAEIACBugQKIWC0APfSpUt2ge3atWvtwlx9OZ1bnCuRItFy9uxZ+1hJj5fOnz9v26m9CDUSPmrjcxp9MOWz+dgOAQhAAAIQmEGgEAJGd07OnTtX\/VI6LcxVUpnq9DhJa1c2btxonXf7aqOkOpXZSv5AQARIiRNARCeOlA4hUGoChRAwpY4gzkMAAhCAAARKSAABk8+gY1WOCPQt6syRNZgCAQhAAAIigIARBRIEIACBnBPgEVzOA4R5bScQLWDabgYDQgACEIAABCAAgfgEEDDxWdESAhCAAAQgUJcAle0jgIBpH2tGggAEIAABCEAgIQIImIRA5rWbvkUdeTUNuyAAgcQJ0CEEykMAAVOeWOMpBCAAAQhAoDAEEDCFCSWOQCB7AmELvsYdwDAS9iEAgYQIIGASAkk3EIAABCAAAQi0jwACpn2sGSl1AgwAgeITYF1b8WOMh\/EIIGDicaIVBCAAAQhAAAI5IoCASTAYdAUBCEAAAhCAQHsIIGDaw5lRIAABCEAgZwRGP53OmUWlNWdOjiNg5oSNgyAAAQhAAAIQyJIAAiZL+owNAQhAAALZE8ACLwkgYLwMG0ZDAAIQgAAEyk0AAVPu+OM9BCCQPQEsgAAE5kAAATMHaBwCAQhAAAIQgEC2BBAw2fJndAhkTwALIAABCHhIAAHjYdAwGQIQgAAEIFB2AgiYss+A7P3PpQV8P0Quw4JREIAABKoEEDBVFGQgAAEIQAACEPCFAALGl0i1aCd3FFoEyOEQgAAEIJArArkRMEeOHDErV66MTKrLFTWMgQAEIAABCJScQNbuZypg7t+\/bzZs2GBFi0Bcu3bNRCXVSdysW7fOXLlyRbskCEAAAhCAAARKTCAzASPxsnv3bvPBBx9Y0bJz586aYVCdhM2ZM2fMvn37arajAgIQgAAEykIAP8tOIDMBs3jxYnP8+HGjbdwgqK2OiduedhCAQH4IsA4rP7HAEggUgUBmAqYI8PABAhAoLwE8hwAEsiWQmYDRIyS3\/mXPnj1tpRAcW2trtm3bZiYmJtpqA4NBAAIQaIYAd7CaoVW7bd8zHbUrqfGKQGYCRo+Dzp07Z7Zs2WJOnjxpF\/K2Y5GuhIrW3mzdutWuvRkZGbEBGxwctFv+QMAPAlgJAQhAoNwEMhMwDvuBAweskBgeHjbd3d1m8+bNVsykdVemq6vLrr3RwmDZoP1XXnnF3L59u5B3YXi3oSi3lmDYGj+OhgAEIJAGgcwFjHPK3ZHRp41OnTpl9IkjPd5px10ZZwPb+ARoCQEIQAACEMiSQG4ETBDCmjVrzOXLl+2dmYMHD5o33njDaN1KsE1SefV74sQJo7swuhtTq9+LFy8a3SVSGh0dNdPT014k58\/jx49n2fvo0SMzNTU1q9wX32rZmYRfv6rwcuxqjdPu8iT8arfNmneOo\/JR4\/voV5QfUWVJ+taIY9T4aZUl6VdaNtbqV\/OwFkuf\/arlr8qDPjvfi7DNpYDRl9XpzovuwOzYscPs3bs39HHrZNC79TC9vb1m+\/btdTs9dOiQ0WJfpaGhIXPnzh0v0lRFaDnHgjbfvXvXjI2NmXv37nnhR9D2evmk\/JqennLYcsEnKb\/qsUuj7uHDh1WOyofH8NWvsB9R+0n7FrwIRY3XrrKk\/WqX3W6csbFPIuek7345\/8Jb+TU5OVn1uUiZ3AgYiQmJA4kWrYNZvXq10QJbPVLauHFj4sw1nsSROj569Kipd\/dFbfbv32\/Xzuh7aAYGBsyyZcu8SF+ZN0\/mm3mVbdDmJUuWmJ6eHrN06VIv\/AjaXi+flF8dHZ2Wm\/7UG69ddUn51S573Tha1yaGSsq7crf11S9nf71t0r7pNSyO2tYbN+26pP1K295w\/4sWdQujTcE56btfYT\/dvvxasGCB9df+KdCfzAWMFutKtKxdu9Y+opGYkGiRUGgkKuYaBydeli9fbkVJnHF0l6a\/v98o9ex+1YQAABAASURBVPX1mY6ODi+STnaOU9Dmzs5OM3\/+fC98CNrdKJ+UX074iV2jMdtRn5Rf7bA1OEZw\/ikfrFPeV79ke6OUtG+aiy41GjvN+qT9StPWWn07jsE5WQS\/ovyVX\/LT+VykbWYCRmtP9D0w+gi1REGad1vCARscHLRFbmt3+AMBCEDAAwKefyrOA8KY6AuBzASM1l\/o9p0Wxca92yLRo8dMrcBVH5cuXbJ3e3TXR3d\/lCSmVNdK3xwLAQjMJMDFdiYP9iAAgeQIZCZgtMbl+9\/\/vnnttdfs976cPXu2pldHjhyxbTZt2mTeeuutmu3iVAQ\/rq1HVS6dO3culYXCcWyiDQQg0CYCDAMBCBSGQGYCRgSDYuL06dNWpOhuSDiprYSGPlqtj1hrnwQBCEAAAhCAQHkJZCpggtjdN\/JKqIST+9bcYHvyEPCQACZDAAIQgEBCBHIjYBLyh24gAAEIQAACECgBAQRMCYJcdZEMBCAAAQhAoCAEEDAFCSRuQAACEIAABMpEoJ0Cpkxc8RUCEIAABCAAgRQJIGBShEvXEIAABCAAgdYJ0EMUAQRMFJUClo0+mC6gV7gEAQhAAAJlJZArAeO+sE7fA6MvttO+vnlXv11U1gDhNwQgAIGsCTA+BPJIIDcCRj\/qeP78efOv\/\/qv5vnnn7estm\/fbrf8ZpHFwB8IQAACEIAABJ4QyIWA0W8Q6feJXn\/9dfPrv\/7rT0wzRr8SrTLVqU21ggwEIFAiArgKAQhAYDaBXAiY2WZRAoFsCYw+mMrWAEaHAAQgAIG6BHIhYPSbSFu3bjXHjh0zv\/zlL6sG667L22+\/bVSnNtUKMhBoIwGGggAEIACB\/BHIhYARFv3ekR4X\/cEf\/IG5ceOG2bFjh+nv77fiRXVqQ4IABCAAAQhAAAIikBsBI2M2btxo+CFHkQgm8hCAAASM4asQmAUQmEkgVwJmpmnsQQACEIAABCAAgWgCDQVM9GHJlmqty4YNG4y+\/6Ve0ketkx25+L31LeosvpN4CAEIQAACpSOQCwGjBbpaqKvvfxkeHq4+RlJeZW+++aYZGRkxt2\/fNoiY0s1RHC4IgY\/5NuiCRBI3YhKgWcoEciFgdAfmxIkTZu\/evUZixvmsvMpUNzk5abTIV98J4+rZQgACEIAABCBQTgK5EDDlRI\/XEIAABFIkQNcNCXBXsCGiXDfIhYDRnRY9QtJ3vuhujCOmvMpUpzZXr141vb29rpotBFIn0LeoI\/UxGAACEIAABJonkAsBI7P1XS96XKTvfnELeZVXmer0w46HDx82b731lpqTIACBfBPAOghAAAKpEsiNgJGXUd8DozLVScRcvnzZrFmzRrskCEAAAhCAAARKTCBXAqbEccD1pAnQHwQKSqCPr0YoaGRxq1kCuREwV65cMevWrYv8Lhh9R4zWwzTrHO0hAAEIQAACECgmgVwImImJCbNv3z6za9cu+30vWvty9OhR474HRutgtIjX+PMPSyEAAQhAAAIQSJFALgSMvuPl1q1bZtWqVaarq8ssX77c6BNHEi0SL8eOHTMSOSlyoGsIQCAFAjzuSAEqXUKg0ATiO5cLARM2V0JGAsaVS9xI5Lh9thCAAAQgAAEIlJtALgSM7rSsX7\/enD592kZDAkbfuKt1LxIy+u6XBQsW2Dr+QAACEIAABNIiQL\/+EMiFgBGuwcFB+1tH+r4XfXRagkZrYdx3v+jRktrFSfq9JPVTq60eR23btm3GgmEdU6s95RCAAAQgAAEI5ItAbgSMBMrx48fNzp07LaEDBw7YH3Vs9rtfJEROnjxp+6j1R4+jxsfHzalTp+wY165dMxqvVnvKIQABCLSHAKNAAAJxCeRCwOhRkT4qffbs2Vl2q0x1ajOrMlCgerX76KOPzOrVqwM1s7P37t2zhUuWLLFb\/kAAAhCAAAQg4BeBXAiYpJC9++67Rr9cvXDhwrpdSsB89tlnddtQCYEyEsBnCEAAAr4QyFTAaJ2KfvdIa11u3LhhduzYMWNdiupUpvUwWuhbD6rqX3zxxXpNqnVaGKzxNK7G0J0b3cGpNihoZvTT6YJ6hlsQgAAEIFA2ApkKGK130foT94V1+vI67YdT0utTJGAkXkZGRuwaGAmk3bt31\/2umYsXL9ov1pOto6OjZnp62ov0q8ePq3N6enpqhs2PHj0yU1Mzy7L1KxmmSfjloD2u8MsLkyT8arcv4udYai5Gje+jX1F+RJUl6VsjjlHjp1WWpF9p2Vir33pz0me\/avmr8qDPbh4VYZupgHEAdffk3LlzRp8+cmVpbiWItGBYC4c1zsDAgLl586a5fv26diPToUOHjD65pDQ0NGTu3LnjRZJocQ6NffJJ1ea7d++asbExo8dpvvgSx86k\/JqqCFTHLc64abdJyq+07ZzV\/907DqOZGB+vzj\/Xzlu\/Yrz+k\/bNgdRr2vHLYpu0X+32Yf6jhw7ljDnpu1+1OMovfXCl6nSBMpkJGD2y0aMbPcJplNRO7dPk\/vTTT5t6i3r3799vJHqUJHiWLVtmfEgdHZ1VbD3PPlu1Wb729PSYpUuXVst88KeRjUn59ZV58yy3eZVtozHbUZ+UX+2wNTiG5pwFWfnTtXDhrLnmq19BH2vlk\/atgtD+76i8pmuN2Y7ypP1qh83BMWrNSd\/9CvoYzMuvon6PWmYCxt11CT8uito\/V7k7o\/b21dviH\/cdMFp\/o660r99heuGFF0y9MfRlenrspNTX12c6Ojq8SO5CLF87Kie+jid2d3Z2mvnz53vhg7M5zjYpvyRcxEwpzrhpt0nKr7TtnN3\/lwJaczFc769fjV\/\/SfumuagUxTHMNc39pP1K09bovqPnpP9+Rc9J+RU8n2kOpZAy6TIzAdNObyVS9OhHH8nWYyOttTl\/\/rxdMLx27Vprir5Iz2b4AwEIQAACEIBA7gnkSsDorkj4cZLKmqEogaLHPFog7I5zZW6Njdt3d3vUXmWuPVsIQAACEPCIAKaWkkBuBIyEir7DRZ\/yccJCeZWprpTRwWkIQAACFQJ8BUIFAv8hECKQCwGjBboSKnv37p2xDkVrUlSmOrUJ2c5uDAJ9z3TEaEWTMAEuGGEi7NchQBUEIJABgVwImAz8ZkgIQAACEIAABDwmkAsBozstW7duNW+\/\/bYJ3mlRXmWqUxuPOWM6BNIjQM8QgAAESkggFwJG3LXoVkJFH1N2C3mVV5nq1IYEAQhAAAIQgAAERCA3AkbGSKi4BbxuqzLVkXJLAMMgEIsA64piYaIRBCAQk0BmAkaPh\/QNu7rbsmfPnpjm0gwCEIAABCAAAQgYk5mA0ZoWfcPuli1bzMmTJ+2Xyq1bt85cuXKlubjQGgIQgAAEIACB0hHITMA40vphRT0u0ne+dHd3m82bN1sxw10ZR4gtBCAAAQhAIHkCvveYuYBxAN0dGYmZU6dOmTNnzlghw10ZR4gtBCAAAWP4bidmAQS+IJAbAfOFOV\/8XbNmjbl8+bKRmDl48KB54403Zny8+otW\/IUABCAAAX8JYDkEWiOQSwGjdTC686IFvjt27DD6Nl7doWnNVY6GQPMEeLfbPDOOgAAEINAOArkRMO4XoyVatA5m9erVZmRkxN6FcT\/C2A4gjAEBCJSDAF5CAAJ+E8hcwGixrkTL2rVrjRbyHj161IqW48ePm66uLr\/pYj0EIAABCEAAAqkQyEzAuO+B0Ueo9Y273G1JJb50mlsCGAYBCEAAAq0QyEzAyOh3332Xuy0CQYJAQQmwhqiggcUtCOSAQGYCRotyX3zxxRwgKKcJeA0BCEAAAhDwmUBmAsZnaNgOAQhAAAIQgEC2BDISMNk6XdbRRx9MldV1\/IYABCAAgYIRQMAULKC4AwEIQAACBSaAa1UCCJgqCjIQgAAEIAABCPhCAAHjS6SwEwIQgED2BLAAArkhgIDJTSgwBAIQgAAEIACBuAQQMHFJ0Q4CEMieABZAAAIQeEIAAfMEBBsIQAACECgXgdFPp8vlcMG8RcAULKC4kyoBOocABCAAgZwQQMDkJBBpmfG1RR1pdU2\/EIBAmwjwHU5tAs0wXhFAwPgULmyFAAQgAAEIQMASQMBYDPyBAAQgAAEIQMAnAs0IGJ\/8im3rnj17zJEjR2K3pyEEIAABCEAAAtkTKLWAkXg5efJk9lHAAghAAAIQKDABXEuDQCkFzP37982GDRvMRx99ZFavXp0GV\/r0nMDoAz5e6XkIMR8CECg4gVIKGMX03XffNSdOnDALFy7ULgkCEIBAYQngGASKSKCUAmbx4sXmxRdfNPyDAAQgAAEIQMBPAqUUMHMJ1cWLF83w8LBNo6OjZnp62ov0+PHjqrthmx89emSmpqa88CNse739JPxy0MSv3ljtrEvCr3ba68Yy5guav6rMRVcW3PrqV9CHWvmkfNM8\/IKiMbU41rIhjfKk\/ErDtkZ91mPps1\/1\/A767OZREbYImJhRPHTokNm2bZtNQ0ND5s6dO16khw8fVj188OBh1ea7d++asbExc+\/evWqZLz7VszMpvxw0XSzqjdeuuqT8ape9wXEcy6tj47Pmms9+BX2Myifp29jYJw6j6X5qehbHqPHTKkvSr7RsrNvv3TvG\/Zuenqqy9N6vGtck+TU5OelcLtQWARMznPv37zfHjx+3aWBgwCxbtsyL1N3dXfWwp+fZqs1LliwxPT09ZunSpdUyX3yqZ2eUX\/Xa16pz0Do7OnLBJym\/avmbZnk9lj771YhZkr4tWvTl67i7uzvTOZmkX40YplHf8+yzbkqajo7OKkvf\/arFSn4tWLCg6nORMgiYmNHs7e01\/f39NvX19VUmfocXad68eVUPle+oXJCVOjs7zfz5873wQfbGTUn5VYVWycQdO812SfmVpo21+q4grP4Pt\/HZr7Av4f2kfXMQg6\/j8Jjt2E\/ar3bYPHOMTofSfKVyfnR1\/vsVfU2SX5ozVacLlEHApB5MBoAABCAAAQhAIGkCpRYwXV1d9pHQzp07k+ZKfxCAAAQgAAEItEKgwbGlFjAN2FANAQhAAAIFI9D3TEfBPCqvOwiY8sYez2MQ6Fv05fPyGM1pAgEIFIcAnuScAAIm5wFK0rzRT\/l6\/CR50hcEIAABCGRHAAGTHXtGhgAEIFCbADUQgEBdAgiYuniohAAEWiXQt4g1B60y5HgIQGA2AQTMbCaUQAACxsAAAhCAQK4JIGByHR6MgwAEIAABCEAgigACJooKZdkTwAIIQAACEIBAHQIImDpwqIIABCAAAQhAIJ8EEDDRcaEUAhCAAAQgAIEcE0DA5Dg4mAYBCEAAAhDwi0D7rEXAtI91JiPxtdmZYGdQCEAAAhBImQACJmXAdA8BCEAAAu0jwEjlIYCAKU+s8RQCEPCUAD8D4mngMDtVAgiYVPHSOQQgUC4CeAsBCLSLAAKmXaQZBwIQgAAEIACBxAggYBJDSUcQyJ4AFkAAAhAoCwEETFkijZ8QgAAEIACBAhFAwBR5ZwgyAAAQAElEQVQomNm7ggUQgAAEIACB9hBAwLSHM6NAAAIQgAAEIJAggUIJmAS50FWJCfCR1RIH3wPX+XJKD4KEiW0hgIBpC2YGgQAEIAABCOSWgJeGIWC8DBtGQwACEIAABMpNAAFT7vjjPQQgAIHsCWABBOZAAAEzB2gcAgEINE+AtUXNM+MICECgNgEETG021EAAAuUggJcQgICHBBAwHgYNkyEAAQhAAAJlJ4CAKfsMwP\/sCWABBCAAAQg0TQAB0zQyfw\/4+MG0v8ZjOQQgAAEIQCBAAAETgFHSLG5DAAIQgAAEvCNQKAFz5MgRs3LlSpuUrxWNiYkJs23bNtvOtd+zZ0+t5pRDAAIQgAAEIJAzAtkLmISAXLlyxRw\/ftycOnXKJuVVFtX95OSkGR8ft+2uXbtmlA4cOBDVlLKSE+Br20s+AXC\/0ARGH0wV2r+iO1cYAXPhwgXz3HPPmRUrVpg1a9aYl156yagsKoD37t2zxUuWLLFb\/kAAAhCAAAR8I1B2ewsjYK5evWqWL19uurq6qjFVWXUnkJGA+eyzzwIlZCEAAQhAAAIQ8IlAYQSMoK9atUobm4J5WxD4I2Fz48YN09\/fb9fBbNiwwdy\/fz\/QYnb24sWLZnh42KbR0VEzPT3tRXr8+HHVmV9V8kG7Hz16ZKamprzwI2h3o3yrftVj1mjsNOtb9StN2+r17R7DiWtUO1\/9ivIlXJaUb2LnXsjhMbLY\/8Ivf88djqW4Bvn57lfQl2Befjqfi7QtlICJGxgJGImXkZERu\/5l\/fr1Zvfu3UaLe2v1cejQIbvwV4t\/h4aGzJ07d7xIY2OfVF2aGB+v2nz37l0zNjZmdDfKF1\/i2JmIX3fvRDKLM35abRLxK6M5O1UR+w5omI\/PfoV9Ce8n6dvDhw8dQvPgwcPq6zg8Zjv2k\/SrHfZGjeFg6k2dqy+CX86X4FZ+ad2n87lI20IJGAkTF5xg3pW5rRbsapGve9w0MDBgbt68aa5fv+6azNru37\/fLhLWcWq\/bNky40P6nyuXVn3pWriwarPW\/\/T09JilS5dWy3zwp5GNSfjV8+yzkcwajZ1mfRJ+pWlfvb6\/Mm+e5Tmvsg23a8WvcF9520\/St+7ubstQf3p6ns30NZukX1nFTByVOjs6qiyL4FcUT\/m1YMECuVu4VBgBE\/XIKKqsVgSffvppo0DXqu\/t7bWPnHTnpq+vz3RUJr4fqbPqki4kzubOzk4zf\/58j\/zoiGVrMn5FM3Psstgm41c8hkn7J+HiJmG4b5\/9CvsS3k\/StyBD5cNjtXM\/Sb\/aaXdwLDcftXXlRfDL+RLcyi\/NGflatFQYAfPyyy+bn\/zkJ0YfnVZSXmXhgOkxkR4Due+J0f6+ffvMCy+8YBYvXhxuzj4EahCgGALtI8C3aLePNSP5Q6AwAkYfnZYw2bx5s1FSXmUKhUSK9s+ePWs\/pXT06FFz\/vx5u4B37dq1amIGBwftlj8QgAAEIAABCOSfQGEEjFDv3LnTLsrVF9MprzIlrXXR2pWNGzdq14oY7audkvJqYys9+YOZEIAABCAAgTITKJSAKXMg8R0CEIAABCBQJgJzFDBlQoSvEIAABCAAAQjkjQACJm8RwR4IQAACECguATxLjAACJjGUdAQBCEAAAhCAQLsIIGDaRZpxIAABCGRPAAsgUBgCCJjChBJHIAABCEAgDoG+RR1xmtEm5wQQMDkPEOZBoFAEcKZlAn2Lvvym6JY7owMIeEwAAeNx8DAdAhCAAAQgUFYCCJiyRr6cfuM1BCAAAQgUhAACpiCBxA0IQAACEIBAmQggYNoZbcbygsDogykv7MRICEAAAmUmgIApc\/TxHQJtJDD6YLqNozEUBCBQJAJRviBgoqgUtGz0Uy4gBQ0tbkEAAhAoHQEETOlCjsMQgAAEINAcAVrnkQACJo9RwSYIQAACEIAABOoSQMDUxUMlBCAAgewJYAEEIDCbAAJmNhNKIAABCEAAAhDIOQEETM4DhHkQyJ4AFkAAAhDIHwEETP5igkUQgAAEIAABCDQggIBpAIjq7AlgAQQgAAEIQCBMAAETJlKw\/b5nOgrmUXvd+doi+LWXOKNBAAIQiEcAAdOQEw0gAIFWCPQt6mzlcI6FAAQgEEkAAROJhUIIQAACEIAABFoikPLBCJiUAdM9BCAAgVYJ8DMgrRLk+CISQMAUMar4BAEIQAACECg4AQRMwQOMexCAAAQgAIEiEkDAFDGq+AQBCGRPAAsgAIFUCSBgUsVL5xCAAAQgAAEIpEEAAZMGVfqEQPYEsAACEIBAoQmUVsAcOXLErFy50iblixhlfXLhHy\/dqbr24188ML9\/+L9s+qP3fm62fnjHbPr+iN135b5vk\/Dr7\/\/lepWZ8krVAjKxCbj5p3nnDgrPryTiFe4zL\/tJ+hZkOPSfX76mHVe28Qi4OTn6YNoe8ONfPKye\/5KM11znIOcaG5bYf0opYK5cuWKOHz9uTp06ZZPyKotNzYOGeqHqRfSdH\/531Vq9aPWCdenirWnz7x9PGLef6LZyYsiqvyT8ctDEbLAiaFb8w3+4oky2d+\/eNf\/0T\/9ktM3EgCYHDc4\/MXSHR82JJOIV1W8eypLyLcgw6\/moOejTXHRzLzgnXZm2wXmSVLyCfTaTTyO2vsZLsWmUSilgLly4YJ577jmzYsUKs2bNGvPSSy8ZlTWC5Uu9Xqjf+eHPTfCk54vtebVTLLMUMToJDQ0NeSFgmH\/pz+Is56NPc9FFwqc5mXRsfYyXi1ujbVEFTF2\/r169apYvX266urqq7VRW3fE8o9vNUv2eu5E783ViCT6Sy52BOTGI+deeQDAf43P2bU4S23ixLaWAEZpVq1ZpY1Mwbwsi\/ly8eNEMDw97kXhGHhHAhIp+cP7\/ZTIHbt26ZT3wYR4y\/2yo2vIni\/no01x052wf52RSsXXxij8h\/WlZWgETN0R61PSNb3zDHDp0yGzbts2LNDx8Ma57tGuSgN7JZTEP\/vqv\/9pa6sM8ZP7ZULXlTxbz0ae56F6rPs7JpGKreOkapmtZWyZlGwcprYAJPjIK5sPsFfT9+\/fbRb9a7OtD+t21X95dCvvDfmsEfnfNKq\/mQhbzlfnX2hxr5ugizsc05qyPczLJ2OoapmtZM3PLh7alFDBRj4yiylwAFfj+\/n7jS\/rfr7zoTGebMIGB317mzTzIar4y\/xKedHW6Yz7GOy\/7OCeTjK2uYXWmkbdVpRQwL7\/8svnJT35i9NFpJeVV5m0UQ4Z\/e\/0y83u\/0R0qZbdVAn2LOozYttpP0Y8XI3\/nnz\/RYT7Gj5Vvc5LYxottKQWMPjqtZ6ObN282SsqrLB4yP1q9963fRMQkGCqdUP5t128l2GOxu2L+pRtf5mPzfH2Zk8Q2fmxLKWCEZ+fOnebatWs2Ka+yIqW+ZzqMLriDf7jCChm9IyZ1N83i25VHRu996+vm+t\/8jhHTtOdIUfoXK+Zf8\/Ot0WuU+Tj3V0je5ySxbT62pRUwzaPy84i\/qwgYXUhIv2UFXbMc3vuTr\/PYqIWpz\/yb27yrNU+Zjy1MxieH5nVOEtsnAWpig4CpA2vPnj32t5L0m0lnz56t09K\/qomJCfuR8Jl++edH0GKtZ1q3bl01ZopfsN7X\/P37982GDRuqfhXxt7s0D+WjfPU1Ts5u+SBfdN5wqSgxkx\/OJz1613nE+e3rNipe8lExVJ2vfjm7dR6UP0rKu\/IibBEwNaKoE+qlS5fsl5YdPXrUvP3226YIk1nu6qSzY8cO65v2i5AUmzfeeMMcPHjQPhYcHh42ip9OuD77p1jt3r3bbN261fql3+86fPiw0fz02a+g7YqdXl\/BMp\/z9+7dM1\/96lft66tIj6k15zT3NAfll77NfHBw0OdQWdsXL15szp07Z19f8mtkZMR+0lCvOdXZRp7+0fnv9u3bRj4V5ZwYDMWvBXeyzudp\/NOnT5v169cbTWB9HLW3t9dOgjzZOBdbdJfCfeLq+eefn0sXuTxGcdJJaOPGjdY+7St+9b7jxzbM+R\/93IW+F8Ot09Lvd61evdr47lcQ+8mTJ83ChQuDRV7nJWDkz4IFC7z2I2y8zom7du2yvx+nugMHDhgl5YuU3n\/\/fevO9u3b7dbnPzpPSGjqPFKUc2IwHgiYII0neb3rlWoNfzeMJsOTJt5uNJE\/\/PBD884773jrQ5kNv379url586ZxItR3FhLUP\/3pT82f\/umf+u5K1f4inCeqzjzJ6C6Z7miGz4lPqguzkZ8nTpwwr7\/++ozfyvPAwUgTFS9dy3RNk2+K4auvvhrZ1sdCBEydqCn4qtZFXypWed+T3sEr+e5HI\/t1YTxz5owpyotVJyCtOdDH\/l966aXqu+BGHPJePzQ0ZF577bVCXCwcawkY3a5fu3atXbekuCl+rt7XrR6L6e6SW2dWFL+C8dDdQN1t7+\/vDxZ7m9edW4kxzcVNmzaZ733ve8bdpfbWqYDhCJgADLLFIKB3GloPoxdsUV6sEtF6lKRn2XpHVYTFeFpToRlXlBjJFwkVxWfLli12TYXipfIirBX57LPPzI9+9CNz4cKF6uP0ql9y0vOk2J0\/f9688sorhRHUOk8cO3bMxktx27dvn9G6GM9DVTUfAVNFMTujd1Iq1cTWSUl5Ur4JSLzoHb3WvxTx+byEjN5R6VawfM13NGpbp9fUBx98YAYGBmo38rBG8ZHQdHNP+0WIlwuFfJFPSsr7Pg+dX9pOTk6a8fHxwjye1flB8VGcFC8l5fWITHXy2feEgImIoAId9cjIPVKKOISiHBDQi1LiRZ8ecBeQHJiVuAkS1rrN7fMiUa3l0WMWPRLTxzv1qbgbN24Y3TXT478moeW+ue\/x0lyTD2HQKlNduNzHfd0t012mJUuW+Gh+KW1GwNQIu9ZOOKWqE+2tW7eMniPWaE5xxgT0jn737t32k2N67puxOYkNL7+01sDd9pVI07z0\/Ta3frrj8uXL9jGLPrqqryrQp+K0bkl1iQFsc0eKj74\/xD0e074+Iu57vPSmTj7ocYTmpJLyKlNdmzGnMpzeGOjOrT6tk8oAbe5UfsgfxUnxUlJeZaprszmpDIeAqYFVz+UVaC3m0rvDvXv32o9U12hOccYE9I7+Zz\/7mdEiPL2jd0kXf71wUzUvxc51cdAnxiRa5JPmo+ZlkURaivja3rUuDHo0JtFStHhpzkmw6I2cku5Sq6ztkFMaUAImpa4z69atUVK8lBSzIt2dRsDUmVoKtN4dKknQ1GnqXZVOtOfOnSvMinS9aw++o1fMlLQeQSLAuwAFDHaxkj9KmpeB6kJk9frSfJSvvjskH+SLYqVUpHhJsMgnpSL5pTknf5SUL0rSuU\/nQMVLqWj+IWD8n6l4AAEIQAACECgdAQRM6UKOwxCAAAQgAAH\/CbQuYPxngAcQgAAEIAABCHhGAAHjWcAwFwIQgAAEikEAL1ojgIBpjR9HQwACEIAABCCQAQEETAbQGRICp0e7IgAAA+ZJREFUEIBA9gSwAAJ+E0DA+B0\/rIcABCAAAQiUkgACppRhx2kINCagr\/R3vzysL2WLSvpmT325mdo27nFmi1b29E23cb6kUHb98R\/\/sdE34rYyHsdCAAL5I4CAyV9MsAgCuSAQ\/nLALVu2GCV9IZZL+nE4\/YKv2rbLaImRQ4cOmbfeeqvhrwbLrm9+85vmu9\/9brvMYxwIQKBNBBAwbQLNMHkjgD2+EtDPRbzwwgtG4iSODxJdH330kdHdmDjtaQMBCPhBAAHjR5ywEgK5JCBR4B4h6c6Ifsjw4MGDxj160lZt9GOU7hFU+NGPHge5Om3VtpazGkO\/C6UfW3Vt9FtX6lPHKrkxXb2+2l93YYaGhlwRWwhAoAAEEDAZBZFhIVBUAv\/8z\/9szpw5Y\/SYadOmTWbz5s3WVe0PDw+bW7dumffff9+WSazohw9V7uolUFRuG4T+jIyM2BL9MJ3NVP7oB+v0I3U6XmnXrl1m3759RsKmUm3\/r1q1yly6dIm1MJYGfyBQDAIImGLEES8gkBsCW7duNbrrIYN0p+T555+3a2e0v2DBAtPb26usFRhaP7N3795qex2nfYkY3W2xDQN\/9IvBOl79qFgi5fbt28pWk35wUD9gpx+yc4VLliwxn3\/+ubl3754rYgsBCPhJoGo1AqaKggwEIJAEAd3tiNPP5OSkvRuzY8cOo0c\/Lmk\/zvFqI5GihcRaF6Pjw4+P1EZJAuapp55CwAgGCQIFIYCAKUggcQMCvhHQ3ZCHDx+ao0eP2sdNevzj0rlz56p3ZRr5tXHjRnu8Hi+tXr3aPrKqJWQa9UU9BBoSoEFuCCBgchMKDIFAuQjorkh3d7fRY6EkPNfdGD06ckLmwoUL1W4llvQISWNWC8lAAAJeE0DAeB0+jIeAvwS03kXrZQ4fPjzjI8579uwx+lSR1reEvXv55ZfN+Pi40eMn1amN2uoY7Stdv37d3Lx506it9pUkYJ566ilTAAEjd0gQgECFAAKmAoH\/EIBANgS04FafGtInlbSGRUmLcvVYSXdUwlatWLHCLFy40Ogui+rU5p133rGfMNKxSurrb\/\/2b2d8T8zp06fN+vXrYz+WUt8kCEAg3wQQMPmOD9ZBIDcEDhw4YA5UUtAgfZmcPkmkre6oaO2K1qS4NsqrTHUqk+DQYx4JF+0rKe\/WvmirerVTXTipXN87I0Hi6tS3xtCxLmlcV69PM+mL7AYGBlwRWwhAoAAEEDAFCCIuQKBMBJr9Zl19QqmZb+4tE0t8hYDPBBAwPkevfLbjMQTsY6C\/+Iu\/mPVldVFo9C3AP\/rRj8ybb74ZVU0ZBCDgMYH\/DwAA\/\/94OKIaAAAABklEQVQDAD24JhnY289eAAAAAElFTkSuQmCC","height":337,"width":560}}
+%---
+%[output:0ee5332d]
+%   data: {"dataType":"text","outputData":{"text":"Capture complete. Mean Voltage: 1.559 V\n","truncated":false}}
+%---

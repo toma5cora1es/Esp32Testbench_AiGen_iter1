@@ -267,13 +267,47 @@ function varargout = esp32_cli(cmd, varargin)
             end
 
         case 'adc'
-            if isempty(varargin), error('Usage: esp32_cli adc <gpio>'); end
+            adcPins = [36, 39, 34, 35, 32, 33];
+            adcLabels = {'VP / SVP (Pin 2 below EN)', ...
+                'VN / SVN (Pin 3 below EN)', ...
+                'D34      (Pin 4 below EN)', ...
+                'D35      (Pin 5 below EN)', ...
+                'D32      (Pin 6 below EN)', ...
+                'D33      (Pin 7 below EN)'};
+            if isempty(varargin) || strcmpi(strtrim(char(varargin{1})), 'all')
+                fprintf('\n=== ESP32 ADC1 Multi-Channel Scan (Left Header Top-to-Bottom) ===\n');
+                fprintf('  GPIO    | Board Silkscreen Position | Raw (12-Bit) | Linear V | Calibrated V (11dB)\n');
+                fprintf('  --------+---------------------------+--------------+----------+--------------------\n');
+                rawOut = zeros(1, 6);
+                for k = 1:6
+                    p = adcPins(k);
+                    resp = esp32_io('cmd', sprintf('ADC %d', p));
+                    r = str2double(resp);
+                    rawOut(k) = r;
+                    vLin = (r / 4095.0) * 3.30;
+                    vCal = 0.0;
+                    if r > 0, vCal = min(0.11 + (r / 4095.0) * 3.05, 3.30); end
+                    fprintf('  GPIO %2d | %-25s | %4d / 4095  | %6.3f V | %6.3f V (%4.0f mV)\n', ...
+                        p, adcLabels{k}, r, vLin, vCal, vCal * 1000);
+                end
+                fprintf('  (Tip: Connect Power Supply GND (-) to ESP32 GND!)\n\n');
+                if nargout > 0, varargout{1} = rawOut; end
+                return;
+            end
+
             pinNum = double(parse_num(varargin{1}));
+            if ~ismember(pinNum, adcPins)
+                warning('ESP32:InvalidAdc1Pin', ...
+                    'GPIO %d is not a valid ADC1 pin on ESP-WROOM-32! Valid ADC1 pins (left header): 36 (VP), 39 (VN), 34, 35, 32, 33.', pinNum);
+            end
             resp = esp32_io('cmd', sprintf('ADC %d', pinNum));
             raw = str2double(resp);
-            volts = (raw / 4095.0) * 3.3;
+            voltsLin = (raw / 4095.0) * 3.30;
+            voltsCal = 0.0;
+            if raw > 0, voltsCal = min(0.11 + (raw / 4095.0) * 3.05, 3.30); end
             if nargout == 0
-                fprintf('  [ADC GPIO %02d] = %4d / 4095  (%.3f V)\n', pinNum, raw, volts);
+                fprintf('  [ADC GPIO %02d] = %4d / 4095 | Linear: %.3f V | Calibrated (11dB): %.3f V (%.0f mV)\n', ...
+                    pinNum, raw, voltsLin, voltsCal, voltsCal * 1000);
             else
                 varargout{1} = raw;
             end
