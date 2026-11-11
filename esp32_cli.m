@@ -1,13 +1,15 @@
 function varargout = esp32_cli(cmd, varargin)
-%ESP32_CLI CLI-First Workbench for ESP32 (SFR JSON Database, Registers, Pins, ADC, Flash OTA, Web, GUI).
+%ESP32_CLI CLI-First Workbench for ESP32 (SFR JSON Database, Registers, Pins, ADC, DAC, PWM, Touch, I2C, SPI, Flash OTA, Web, GUI).
 %
 % CONSOLE USAGE (PURE CLI SYNTAX):
 %   esp32_cli scan                              % List COM ports (with Registry & PnP driver info)
 %   esp32_cli debug                             % Run autonomous PowerShell & MATLAB hardware diagnostics
-%   esp32_cli connect COM5                      % Connect via USB Serial or BT Virtual COM port
+%   esp32_cli connect COM8                      % Connect via USB Serial or BT Virtual COM port
 %   esp32_cli connect ESP32_BT_BRIDGE           % Connect natively via Bluetooth SPP
 %   esp32_cli connect 192.168.4.1               % Connect via Wi-Fi (ESP32_LAB AP)
-%   esp32_cli status                            % Display chip status and uptime
+%   esp32_cli status                            % Display chip status, uptime, and free heap
+%   esp32_cli info                              % Display Free Heap RAM, Flash Size, and OTA Partition Size
+%   esp32_cli loopback                          % Run autonomous GPIO, DAC, ADC1, Touch & I2C self-test
 %   esp32_cli sfr GPIO                          % Search registers matching 'GPIO' in esp32_sfr.json
 %   esp32_cli sfr GPIO_OUT_REG                  % Show bitfield map of GPIO_OUT_REG from esp32_sfr.json
 %   esp32_cli reg GPIO_OUT_REG                  % Read register by symbolic name (or 0x3FF44004)
@@ -15,7 +17,15 @@ function varargout = esp32_cli(cmd, varargin)
 %   esp32_cli bits GPIO_OUT_REG GPIO2 1         % Modify bitfield by symbolic name from esp32_sfr.json
 %   esp32_cli bits 0x3FF44004 2 2 1             % Modify bits [msb:lsb] numerically
 %   esp32_cli pin 2 toggle                      % Toggle GPIO 2 state
-%   esp32_cli adc 34                            % Read ADC on GPIO 34 (0-4095 and Voltage)
+%   esp32_cli adc [34 | all]                    % Read ADC1 on GPIO 34 (or scan all 6 ADC1 channels)
+%   esp32_cli dac 25 128                        % Output 8-bit analog voltage (0..255 -> 0..3.30V) on GPIO 25 or 26
+%   esp32_cli pwm 4 1000 512                    % Output 10-bit hardware PWM (1000 Hz, 50% duty) on GPIO 4
+%   esp32_cli touch [32 | all]                  % Read capacitive touch on GPIO 32 (or scan all 9 touch pins)
+%   esp32_cli i2c scan                          % Scan I2C bus on D21 (SDA) & D22 (SCL)
+%   esp32_cli i2c read 0x68 0x75 1              % Read <n> bytes from I2C <addr> <reg>
+%   esp32_cli i2c write 0x68 0x6B 0x00          % Write <val> to I2C <addr> <reg>
+%   esp32_cli spi 5 0x9F                        % Transfer byte over VSPI (SCK=18, MISO=19, MOSI=23, CS=5)
+%   esp32_cli beep 4 1200 150                   % Emit 1200 Hz tone for 150 ms on GPIO 4
 %   esp32_cli dump GPIO_OUT_REG 8               % Display Hex/Binary table starting at symbol/address
 %   esp32_cli flash my_sketch.ino --wifi        % Compile, inject Core0 Web+OTA+BT, and flash over Wi-Fi
 %   esp32_cli flash my_sketch.ino --usb         % Compile and flash via USB
@@ -85,6 +95,29 @@ function varargout = esp32_cli(cmd, varargin)
             resp = esp32_io('cmd', 'STATUS');
             if nargout == 0
                 fprintf('[ESP32] Mode: %s | Target: %s | Response: %s\n', upper(s.Mode), s.Target, resp);
+            else
+                varargout{1} = resp;
+            end
+
+        case 'info'
+            respInfo = esp32_io('cmd', 'INFO');
+            respStat = esp32_io('cmd', 'STATUS');
+            if nargout == 0
+                fprintf('\n=== ESP32 On-Chip Memory & Partition Telemetry ===\n');
+                fprintf('  Status   : %s\n', respStat);
+                fprintf('  Hardware : %s\n\n', respInfo);
+            else
+                varargout{1} = respInfo;
+            end
+
+        case {'raw', 'send', 'cmd'}
+            if isempty(varargin)
+                error('Usage: esp32_cli raw "<COMMAND>"');
+            end
+            rawStr = strjoin(string(varargin), ' ');
+            resp = esp32_io('cmd', char(rawStr));
+            if nargout == 0
+                fprintf('  [RAW "%s"] -> %s\n', rawStr, resp);
             else
                 varargout{1} = resp;
             end
@@ -312,6 +345,128 @@ function varargout = esp32_cli(cmd, varargin)
                 varargout{1} = raw;
             end
 
+        case 'dac'
+            if numel(varargin) < 2
+                error('Usage: esp32_cli dac <25|26> <0..255>');
+            end
+            pinNum = double(parse_num(varargin{1}));
+            valNum = min(max(double(parse_num(varargin{2})), 0), 255);
+            resp = esp32_io('cmd', sprintf('DAC %d %d', pinNum, valNum));
+            vEst = (valNum / 255.0) * 3.30;
+            if nargout == 0
+                fprintf('  [DAC GPIO %02d] <= %3d / 255 (~%.2f V) -> %s\n', pinNum, valNum, vEst, resp);
+            else
+                varargout{1} = resp;
+            end
+
+        case 'pwm'
+            if numel(varargin) < 3
+                error('Usage: esp32_cli pwm <pin> <freq_Hz> <duty_0_1023>');
+            end
+            pinNum  = double(parse_num(varargin{1}));
+            freqHz  = double(parse_num(varargin{2}));
+            dutyVal = min(max(double(parse_num(varargin{3})), 0), 1023);
+            resp = esp32_io('cmd', sprintf('PWM %d %d %d', pinNum, freqHz, dutyVal));
+            pct = (dutyVal / 1023.0) * 100.0;
+            if nargout == 0
+                fprintf('  [PWM GPIO %02d] <= %d Hz | Duty: %d / 1023 (%.1f%%) -> %s\n', ...
+                    pinNum, freqHz, dutyVal, pct, resp);
+            else
+                varargout{1} = resp;
+            end
+
+        case 'touch'
+            touchPins = [32, 33, 27, 14, 12, 13, 15, 2, 4];
+            touchLabels = {'D32 (TOUCH9 - Left)', 'D33 (TOUCH8 - Left)', 'D27 (TOUCH7 - Left)', ...
+                           'D14 (TOUCH6 - Left)', 'D12 (TOUCH5 - Left)', 'D13 (TOUCH4 - Left)', ...
+                           'D15 (TOUCH3 - Right)', 'D2  (TOUCH2 - Right)', 'D4  (TOUCH0 - Right)'};
+            if isempty(varargin) || strcmpi(strtrim(char(varargin{1})), 'all')
+                fprintf('\n=== ESP32 Capacitive Touch Sensor Scan (9 Pads on 30-Pin Board) ===\n');
+                fprintf('  GPIO    | Board Silkscreen & Touch Ch | Raw Period Count (Lower = Touched)\n');
+                fprintf('  --------+-----------------------------+-----------------------------------\n');
+                tOut = zeros(1, numel(touchPins));
+                for k = 1:numel(touchPins)
+                    p = touchPins(k);
+                    r = str2double(esp32_io('cmd', sprintf('TOUCH %d', p)));
+                    tOut(k) = r;
+                    fprintf('  GPIO %2d | %-27s | %4d\n', p, touchLabels{k}, r);
+                end
+                fprintf('\n');
+                if nargout > 0, varargout{1} = tOut; end
+                return;
+            end
+            pinNum = double(parse_num(varargin{1}));
+            raw = str2double(esp32_io('cmd', sprintf('TOUCH %d', pinNum)));
+            if nargout == 0
+                fprintf('  [TOUCH GPIO %02d] = %d (Lower value indicates finger capacitance)\n', pinNum, raw);
+            else
+                varargout{1} = raw;
+            end
+
+        case 'i2c'
+            if isempty(varargin)
+                subCmd = 'SCAN';
+            else
+                subCmd = upper(strtrim(char(strjoin(string(varargin), ' '))));
+            end
+            resp = esp32_io('cmd', ['I2C ' subCmd]);
+            if nargout == 0
+                fprintf('  [I2C (SDA=D21, SCL=D22) %s] -> %s\n', subCmd, resp);
+            else
+                varargout{1} = resp;
+            end
+
+        case 'spi'
+            if numel(varargin) < 2
+                error('Usage: esp32_cli spi <cs_pin> <hex_byte>  (e.g., esp32_cli spi 5 0x9F)');
+            end
+            csPin = double(parse_num(varargin{1}));
+            txByte = double(parse_num(varargin{2}));
+            resp = esp32_io('cmd', sprintf('SPI %d 0x%02X', csPin, txByte));
+            if nargout == 0
+                fprintf('  [VSPI (SCK=18, MISO=19, MOSI=23, CS=%d) TX=0x%02X] -> RX=%s\n', csPin, txByte, resp);
+            else
+                varargout{1} = resp;
+            end
+
+        case 'beep'
+            pinNum = 4; freqHz = 1200; durMs = 150;
+            if numel(varargin) >= 1, pinNum = double(parse_num(varargin{1})); end
+            if numel(varargin) >= 2, freqHz = double(parse_num(varargin{2})); end
+            if numel(varargin) >= 3, durMs  = double(parse_num(varargin{3})); end
+            resp = esp32_io('cmd', sprintf('BEEP %d %d %d', pinNum, freqHz, durMs));
+            if nargout == 0
+                fprintf('  [BEEP GPIO %02d | %d Hz | %d ms] -> %s\n', pinNum, freqHz, durMs, resp);
+            else
+                varargout{1} = resp;
+            end
+
+        case 'loopback'
+            fprintf('\n====================================================================\n');
+            fprintf('  ESP32 AUTONOMOUS HARDWARE PERIPHERAL SELF-TEST\n');
+            fprintf('====================================================================\n');
+            esp32_cli('info');
+            fprintf('--- 1. Testing Built-in LED (GPIO 2) & GPIO_OUT_REG ---\n');
+            esp32_cli('pin', 2, 'high');
+            esp32_cli('reg', 'GPIO_OUT_REG');
+            esp32_cli('pin', 2, 'low');
+
+            fprintf('\n--- 2. Testing DAC1 (GPIO 25) Step Sweep & ADC1 Scan ---\n');
+            fprintf('  (Tip: Connect a jumper wire from D25 to D34 to see closed-loop voltage!)\n');
+            for dacVal = [0, 128, 255]
+                esp32_cli('dac', 25, dacVal);
+                pause(0.1);
+                esp32_cli('adc', 34);
+            end
+            esp32_cli('dac', 25, 0);
+
+            fprintf('\n--- 3. Scanning Capacitive Touch Pads ---\n');
+            esp32_cli('touch', 'all');
+
+            fprintf('--- 4. Scanning I2C Bus (D21=SDA, D22=SCL) ---\n');
+            esp32_cli('i2c', 'scan');
+            fprintf('====================================================================\n\n');
+
         case 'dump'
             if isempty(varargin)
                 baseAddr = uint32(hex2dec('3FF44000'));
@@ -379,7 +534,6 @@ function run_autonomous_powershell_diagnostics()
     fprintf('  ESP32 WORKBENCH — AUTONOMOUS POWERSHELL & MATLAB DIAGNOSTICS\n');
     fprintf('====================================================================\n');
 
-    % 1. Check and release any orphan MATLAB serialport handles
     fprintf('\n[1/5] Checking active MATLAB serialport handles...\n');
     try
         if exist('serialportfind', 'file') || exist('serialportfind', 'builtin')
@@ -397,12 +551,10 @@ function run_autonomous_powershell_diagnostics()
         fprintf('  (Could not query serialportfind: %s)\n', ME.message);
     end
 
-    % 2. Query Windows Registry SERIALCOMM (exact kernel device mapping for COM3, COM5, COM10, COM11)
     fprintf('\n[2/5] Querying Windows Registry HKLM:\\HARDWARE\\DEVICEMAP\\SERIALCOMM...\n');
     [~, regOut] = system('powershell -NoProfile -Command "Get-ItemProperty ''HKLM:\HARDWARE\DEVICEMAP\SERIALCOMM'' -ErrorAction SilentlyContinue | Format-List"');
     fprintf('%s\n', strtrim(regOut));
 
-    % 3. Query Windows PnP USB & Serial Devices (including devices with driver errors)
     fprintf('\n[3/5] Querying Windows PnP USB / UART / Serial Devices...\n');
     psPnp = [ ...
         'powershell -NoProfile -Command "' ...
@@ -413,12 +565,10 @@ function run_autonomous_powershell_diagnostics()
     [~, pnpOut] = system(psPnp);
     fprintf('%s\n', strtrim(pnpOut));
 
-    % 4. Query arduino-cli board list
     fprintf('\n[4/5] Running arduino-cli board list...\n');
     [~, acliOut] = system('arduino-cli board list');
     fprintf('%s\n', strtrim(acliOut));
 
-    % 5. Check Wi-Fi connection status & reachability of 192.168.4.1 (ESP32_LAB)
     fprintf('\n[5/5] Checking Wi-Fi SSID & ESP32_LAB (192.168.4.1) reachability...\n');
     [~, wifiOut] = system('powershell -NoProfile -Command "netsh wlan show interfaces | Select-String ''SSID|State''; Test-Connection -ComputerName 192.168.4.1 -Count 1 -Quiet"');
     fprintf('%s\n', strtrim(wifiOut));
