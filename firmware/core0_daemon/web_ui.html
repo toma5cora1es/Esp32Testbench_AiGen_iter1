@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP32 On-Chip Register & HIL Workbench</title>
+  <style>
+    body{font-family:Consolas,monospace;background:#14171f;color:#e2e8f0;margin:0;padding:16px}
+    h2{color:#38bdf8;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+    .card{background:#1e2330;border:1px solid #334155;border-radius:8px;padding:14px}
+    button{background:#2563eb;color:#fff;border:none;padding:8px 12px;border-radius:5px;cursor:pointer;font-family:inherit;margin:3px}
+    button.on{background:#16a34a}button.off{background:#dc2626}button.warn{background:#d97706}
+    input,select{background:#0f172a;color:#38bdf8;border:1px solid #475569;padding:7px;border-radius:4px;font-family:inherit}
+    table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}th,td{border:1px solid #334155;padding:6px;text-align:left}
+    .bits{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin-top:8px}
+    .bitbtn{padding:4px;font-size:11px;background:#334155}.bitbtn.high{background:#16a34a;font-weight:bold}
+    #log{background:#090b10;color:#4ade80;padding:10px;height:140px;overflow-y:auto;border-radius:6px;white-space:pre-wrap;font-size:12px}
+    #pbar{width:100%;background:#0f172a;border:1px solid #475569;border-radius:4px;height:18px;margin-top:6px;display:none}
+    #pfill{height:100%;background:#16a34a;width:0%;transition:width 0.2s}
+  </style>
+</head>
+<body>
+  <h2>UDE-Lite ESP32 Web Register & HIL Workbench ({{FW_BUILD_ID}})</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>1. Quick Pin, DAC, PWM & Bus Control</h3>
+      <div>
+        GPIO 2 (LED):
+        <button class="on" onclick="cmd('PIN 2 HIGH')">HIGH</button>
+        <button class="off" onclick="cmd('PIN 2 LOW')">LOW</button>
+        <button onclick="cmd('PIN 2 TOGGLE')">TOGGLE</button>
+      </div>
+      <div style="margin-top:6px">
+        DAC D25 (0..255):
+        <button onclick="cmd('DAC 25 0')">0V</button>
+        <button onclick="cmd('DAC 25 128')">1.65V</button>
+        <button onclick="cmd('DAC 25 255')">3.3V</button>
+        <button class="warn" onclick="cmd('I2C SCAN')">I2C Scan (D21/D22)</button>
+      </div>
+      <div style="margin-top:6px">
+        Dynamic Beep Interval (RTC_CNTL_STORE0_REG 0x3FF4804C):<br>
+        <button onclick="writeReg('0x3FF4804C','0x00000096')">Fast (150 ms)</button>
+        <button onclick="writeReg('0x3FF4804C','0x000003E8')">Medium (1000 ms)</button>
+        <button onclick="writeReg('0x3FF4804C','0x00000BB8')">Slow (3000 ms)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>2. Direct 32-Bit SFR Register Inspector</h3>
+      <select id="preset" onchange="document.getElementById('addr').value=this.value;readReg()">
+        <option value="0x3FF44004">GPIO_OUT_REG (0x3FF44004)</option>
+        <option value="0x3FF44008">GPIO_OUT_W1TS_REG (0x3FF44008)</option>
+        <option value="0x3FF4400C">GPIO_OUT_W1TC_REG (0x3FF4400C)</option>
+        <option value="0x3FF44020">GPIO_ENABLE_REG (0x3FF44020)</option>
+        <option value="0x3FF44024">GPIO_ENABLE_W1TS_REG (0x3FF44024)</option>
+        <option value="0x3FF4403C">GPIO_IN_REG (0x3FF4403C)</option>
+        <option value="0x3FF49040">IO_MUX_GPIO2_REG (0x3FF49040)</option>
+        <option value="0x3FF4804C">RTC_CNTL_STORE0_REG (0x3FF4804C)</option>
+      </select><br><br>
+      Addr: <input id="addr" value="0x3FF44004" size="11">
+      Val: <input id="val" value="0x00000004" size="11"><br><br>
+      <button onclick="readReg()">Read Register</button>
+      <button class="warn" onclick="writeReg(document.getElementById('addr').value,document.getElementById('val').value)">Write Register</button>
+      <div class="bits" id="bitgrid"></div>
+    </div>
+
+    <div class="card">
+      <h3>3. Backend Command & OTA Firmware Upload</h3>
+      Raw CLI: <input id="rawq" value="INFO" size="18">
+      <button onclick="cmd(document.getElementById('rawq').value)">Send</button>
+      <button onclick="refreshTable()">Refresh SFR Table</button>
+      <hr style="border-color:#334155">
+      <input type="file" id="otafile" accept=".bin">
+      <button class="warn" onclick="uploadOta()">Flash .bin (OTA)</button>
+      <div id="pbar"><div id="pfill"></div></div>
+      <div id="otastatus" style="font-size:12px;margin-top:4px;color:#38bdf8"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h3>4. Live Peripheral Registers Map</h3>
+    <table>
+      <thead><tr><th>Register</th><th>Address</th><th>Hex Value</th><th>Binary (31..0)</th></tr></thead>
+      <tbody id="regtbl"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h3>Backend Execution Log</h3>
+    <div id="log">Ready. Connected to ESP32 Backend ({{FW_BUILD_ID}}).</div>
+  </div>
+
+  <script>
+    const REGS=[
+      ["GPIO_OUT_REG","0x3FF44004"],
+      ["GPIO_ENABLE_REG","0x3FF44020"],
+      ["GPIO_IN_REG","0x3FF4403C"],
+      ["IO_MUX_GPIO2_REG","0x3FF49040"],
+      ["RTC_CNTL_STORE0_REG","0x3FF4804C"]
+    ];
+    let curRegVal=0, otaBusy=false;
+    function log(m){const el=document.getElementById("log");el.textContent="["+new Date().toLocaleTimeString()+"] "+m+"\n"+el.textContent;}
+    async function cmd(q){if(otaBusy)return "";const r=await fetch("/cmd?q="+encodeURIComponent(q));const t=await r.text();log("CMD \""+q+"\" -> "+t.trim());return t.trim();}
+    function toBin32(v){return (v>>>0).toString(2).padStart(32,"0").replace(/(.{4})/g,"$1_").slice(0,-1);}
+    function renderBits(v){
+      curRegVal=v>>>0;const g=document.getElementById("bitgrid");g.innerHTML="";
+      for(let b=31;b>=0;b--){
+        const bit=(curRegVal>>>b)&1;const btn=document.createElement("button");
+        btn.className="bitbtn "+(bit?"high":"");btn.textContent="B"+b+":"+bit;
+        btn.onclick=()=>{const next=(curRegVal^(1<<b))>>>0;writeReg(document.getElementById("addr").value,"0x"+next.toString(16).toUpperCase().padStart(8,"0"));};
+        g.appendChild(btn);
+      }
+    }
+    async function readReg(){if(otaBusy)return;const a=document.getElementById("addr").value;const t=await cmd("R "+a.replace(/^0x/i,""));document.getElementById("val").value=t;renderBits(parseInt(t,16));}
+    async function writeReg(a,v){if(otaBusy)return;document.getElementById("addr").value=a;document.getElementById("val").value=v;const t=await cmd("W "+a.replace(/^0x/i,"")+" "+v.replace(/^0x/i,""));renderBits(parseInt(t,16));refreshTable();}
+    async function refreshTable(){
+      if(otaBusy)return;let html="";
+      for(const [n,a] of REGS){
+        if(otaBusy)return;
+        const r=await fetch("/cmd?q="+encodeURIComponent("R "+a.replace(/^0x/i,"")));
+        const h=(await r.text()).trim();const v=parseInt(h,16);
+        html+=`<tr><td>${n}</td><td>${a}</td><td>${h}</td><td>${toBin32(v)}</td></tr>`;
+      }
+      document.getElementById("regtbl").innerHTML=html;
+    }
+    async function uploadOta(){
+      const f=document.getElementById("otafile").files[0];if(!f){alert("Select a .bin file first!");return;}
+      otaBusy=true;document.getElementById("pbar").style.display="block";const st=document.getElementById("otastatus");
+      st.textContent="Preparing RAM & freeing 2.4GHz radio (OTA_PREP)...";
+      try{const prep=await fetch("/cmd?q=OTA_PREP");log("Pre-flight: "+(await prep.text()));}catch(e){}
+      await new Promise(r=>setTimeout(r,250));
+      const fd=new FormData();fd.append("image",f);const xhr=new XMLHttpRequest();
+      xhr.upload.onprogress=(e)=>{
+        if(e.lengthComputable){
+          const p=Math.round((e.loaded/e.total)*100);
+          document.getElementById("pfill").style.width=p+"%";
+          st.textContent="Uploading: "+p+"% ("+Math.round(e.loaded/1024)+" / "+Math.round(e.total/1024)+" KB)";
+        }
+      };
+      xhr.onload=()=>{st.textContent="OTA Success! Rebooting ESP32 (reloading in 4s)...";log("OTA Response: "+xhr.responseText);setTimeout(()=>{otaBusy=false;location.reload();},4000);};
+      xhr.onerror=()=>{st.textContent="ESP32 rebooting into new firmware (reloading in 4s)...";setTimeout(()=>{otaBusy=false;location.reload();},4000);};
+      xhr.open("POST","/ota",true);xhr.send(fd);
+    }
+    window.onload=async()=>{await readReg();await refreshTable();};
+  </script>
+</body>
+</html>

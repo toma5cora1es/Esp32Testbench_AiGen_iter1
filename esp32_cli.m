@@ -502,6 +502,26 @@ function varargout = esp32_cli(cmd, varargin)
                 varargout{1} = vals;
             end
 
+        case 'hil'
+                    if isempty(varargin)
+                        rep = esp32_hil('all');
+                    else
+                        rep = esp32_hil(varargin{:});
+                    end
+                    if nargout > 0, varargout{1} = rep; end
+
+                case 'pulse'
+                    pinNum = 35;
+                    timeoutUs = 50000;
+                    if numel(varargin) >= 1, pinNum = double(parse_num(varargin{1})); end
+                    if numel(varargin) >= 2, timeoutUs = double(parse_num(varargin{2})); end
+                    resp = esp32_io('cmd', sprintf('PULSE %d %d', pinNum, timeoutUs));
+                    if nargout == 0
+                        fprintf('  [PULSE GPIO %02d] -> %s\n', pinNum, resp);
+                    else
+                        varargout{1} = resp;
+                    end
+
         case 'flash'
             if isempty(varargin)
                 error('Usage: esp32_cli flash <path_to_file.ino_or_.bin> [--wifi | --usb [COMx]]');
