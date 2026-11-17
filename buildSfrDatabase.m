@@ -1,12 +1,18 @@
 function db = buildSfrDatabase(outJsonPath, socRegDir)
     % Compiles ESP-IDF C register headers (*_reg.h + soc.h) into esp32_sfr.json
+    % using an explicit 5-state C-Header Lexer FSM.
     arguments
         outJsonPath string = "esp32_sfr.json"
         socRegDir string = ""
     end
 
+    % =========================================================================
+    % LEXER STATE 1: LOCATE_SDK_HEADERS
+    % =========================================================================
+    lexerState = "LOCATE_SDK_HEADERS";
+    trace_lexer(lexerState, "Searching for ESP32 soc/*_reg.h headers installed by arduino-cli");
+
     if socRegDir == ""
-        % Locate headers installed by arduino-cli core install esp32:esp32
         root = fullfile(getenv("LOCALAPPDATA"), "Arduino15", "packages", "esp32");
         hits = dir(fullfile(root, "**", "soc", "esp32", "register", "soc", "gpio_reg.h"));
         if isempty(hits)
@@ -14,8 +20,12 @@ function db = buildSfrDatabase(outJsonPath, socRegDir)
         end
         socRegDir = string(hits(1).folder);
     end
+    trace_lexer(lexerState, sprintf("Found SDK header directory: %s", socRegDir));
 
-    % 1. Parse DR_REG_*_BASE addresses from soc.h
+    % =========================================================================
+    % LEXER STATE 2: PARSE_SOC_BASES
+    % =========================================================================
+    lexerState = "PARSE_SOC_BASES";
     baseMap = containers.Map('KeyType', 'char', 'ValueType', 'uint32');
     socH = fullfile(socRegDir, "soc.h");
     if isfile(socH)
@@ -25,7 +35,6 @@ function db = buildSfrDatabase(outJsonPath, socRegDir)
             baseMap(tok{i}{1}) = uint32(hex2dec(tok{i}{2}));
         end
     end
-    % Fallback standard ESP32 peripheral bases if soc.h is in a parent include folder
     defaults = {"DR_REG_DPORT_BASE", '3ff00000'; "DR_REG_UART_BASE", '3ff40000'; ...
                 "DR_REG_SPI1_BASE",  '3ff42000'; "DR_REG_SPI0_BASE", '3ff43000'; ...
                 "DR_REG_GPIO_BASE",  '3ff44000'; "DR_REG_RTCCNTL_BASE", '3ff48000'; ...
@@ -38,14 +47,19 @@ function db = buildSfrDatabase(outJsonPath, socRegDir)
             baseMap(defaults{i, 1}) = uint32(hex2dec(defaults{i, 2}));
         end
     end
+    trace_lexer(lexerState, sprintf("Loaded %d peripheral DR_REG_*_BASE addresses", double(baseMap.Count)));
 
-    % 2. Parse every *_reg.h in socRegDir
+    % =========================================================================
+    % LEXER STATE 3 & 4: SEEK_REG_DEFINE <-> ATTACH_BITFIELDS
+    % =========================================================================
     regFiles = dir(fullfile(socRegDir, "*_reg.h"));
     registers = struct();
+    trace_lexer("SEEK_REG_DEFINE", sprintf("Scanning %d *_reg.h header files for register & bitfield macros", numel(regFiles)));
 
     for f = 1:numel(regFiles)
         lines = splitlines(string(fileread(fullfile(regFiles(f).folder, regFiles(f).name))));
         curReg = "";
+        lexerState = "SEEK_REG_DEFINE";
 
         for k = 1:numel(lines)
             ln = lines(k);
@@ -58,15 +72,17 @@ function db = buildSfrDatabase(outJsonPath, socRegDir)
                 curReg = mBase{1};
                 addr = baseMap(mBase{2}) + uint32(hex2dec(mBase{3}));
                 registers.(curReg) = struct('address', sprintf("0x%08X", addr), 'bitfields', struct());
+                lexerState = "ATTACH_BITFIELDS";
                 continue;
             elseif ~isempty(mAbs)
                 curReg = mAbs{1};
                 registers.(curReg) = struct('address', "0x" + upper(mAbs{2}), 'bitfields', struct());
+                lexerState = "ATTACH_BITFIELDS";
                 continue;
             end
 
             % Match ESP-IDF bitfield comment: /* FIELD : R/W ;bitpos:[msb:lsb]
-            if curReg ~= ""
+            if strcmp(lexerState, "ATTACH_BITFIELDS") && curReg ~= ""
                 mBf = regexp(ln, '/\*\s*([A-Z0-9_]+)\s*:\s*([A-Z/]+)\s*;bitpos:\[(\d+):(\d+)\]', 'tokens', 'once');
                 if ~isempty(mBf)
                     bfName = mBf{1};
@@ -82,7 +98,11 @@ function db = buildSfrDatabase(outJsonPath, socRegDir)
         end
     end
 
-    % 3. Expand individual BIT0..BIT31 pin fields on 32-bit GPIO registers for direct pin access
+    % =========================================================================
+    % LEXER STATE 5: EXPAND_GPIO_BITS & SERIALIZE JSON
+    % =========================================================================
+    lexerState = "EXPAND_GPIO_BITS";
+    trace_lexer(lexerState, "Synthesizing individual GPIO0..GPIO31 bitfields on 32-bit GPIO registers");
     gpioRegs = ["GPIO_OUT_REG", "GPIO_OUT_W1TS_REG", "GPIO_OUT_W1TC_REG", ...
                 "GPIO_ENABLE_REG", "GPIO_ENABLE_W1TS_REG", "GPIO_ENABLE_W1TC_REG", "GPIO_IN_REG"];
     for r = gpioRegs
@@ -100,8 +120,14 @@ function db = buildSfrDatabase(outJsonPath, socRegDir)
     fwrite(fid, jsonencode(db, 'PrettyPrint', true), 'char');
     fclose(fid);
 
-    % Self-check assertion on compiled database
     assert(isfield(db.registers, 'GPIO_OUT_REG') && db.registers.GPIO_OUT_REG.address == "0x3FF44004", ...
         "SFR compilation check failed: GPIO_OUT_REG missing or wrong address.");
+    trace_lexer("VERIFY_AND_WRITE_JSON", sprintf("Compiled %d ESP32 registers into %s", numel(fieldnames(registers)), outJsonPath));
     fprintf("Compiled %d ESP32 registers from %s into %s\n", numel(fieldnames(registers)), socRegDir, outJsonPath);
+end
+
+function trace_lexer(fsmState, msg)
+    if exist('esp32_io', 'file') == 2
+        try esp32_io('trace', 'buildSfrDatabase.m', char("FSM: " + fsmState), char(msg)); catch, end
+    end
 end

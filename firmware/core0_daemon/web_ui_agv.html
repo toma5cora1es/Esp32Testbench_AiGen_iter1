@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>GREEN AGV — Arcade Cockpit & ESP-NOW Master/Slave Workbench ({{FW_BUILD_ID}})</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131924; --border: #243044;
+    --neon: #00f2fe; --green: #00e676; --amber: #ffab00; --red: #ff1744; --text: #e2e8f0;
+  }
+  * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+  body {
+    margin: 0; padding: 10px; background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', Consolas, monospace; overflow-x: hidden;
+  }
+  .topnav {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #0f172a; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; margin-bottom: 8px;
+  }
+  .topnav a {
+    color: var(--neon); text-decoration: none; padding: 5px 12px; border-radius: 5px;
+    border: 1px solid var(--border); font-size: 12px; font-weight: bold; margin-left: 6px;
+  }
+  .topnav a.active { background: #0284c7; color: #fff; border-color: var(--neon); }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; margin-bottom: 10px;
+  }
+  .badge { padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; background: #1e293b; color: var(--neon); }
+  .grid { display: grid; grid-template-columns: 1.05fr 1.15fr 1fr; gap: 10px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; display: flex; flex-direction: column; align-items: center;
+  }
+  .card h3 { margin: 0 0 8px 0; font-size: 13px; color: var(--neon); text-transform: uppercase; letter-spacing: 1px; width: 100%; border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+  .kpi-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; width: 100%; margin-bottom: 8px; }
+  .kpi { background: #0d121b; border: 1px solid #1f293a; border-radius: 6px; padding: 8px; text-align: center; }
+  .kpi .lbl { font-size: 10px; color: #8b9bb4; }
+  .kpi .val { font-size: 18px; font-weight: bold; color: var(--green); margin-top: 2px; }
+  .line-leds { display: flex; gap: 8px; margin: 6px 0; flex-wrap: wrap; justify-content: center; }
+  .sensor-dot {
+    width: 52px; height: 26px; border-radius: 5px; border: 2px solid #334155;
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold;
+    background: #1e293b; color: #94a3b8; transition: 0.1s;
+  }
+  .sensor-dot.active { background: var(--red); color: #fff; border-color: #ff8a80; box-shadow: 0 0 10px var(--red); }
+  .sensor-dot.btn-on { background: var(--green); color: #000; border-color: #69f0ae; box-shadow: 0 0 10px var(--green); }
+  .btn-group { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; margin-top: 6px; }
+  button {
+    flex: 1; padding: 9px 6px; border: 1px solid var(--border); border-radius: 6px;
+    background: #1c2536; color: #fff; font-family: inherit; font-weight: bold; font-size: 11px;
+    cursor: pointer; transition: 0.15s;
+  }
+  button.active { background: #0284c7; border-color: var(--neon); box-shadow: 0 0 8px rgba(0,242,254,0.4); }
+  button.danger { background: #881337; border-color: var(--red); }
+  #joyCanvas, #radarCanvas { background: #070a0e; border: 1px solid #26334d; border-radius: 8px; touch-action: none; }
+  .key-hint { font-size: 11px; color: #94a3b8; margin-top: 6px; text-align: center; }
+  .cmd-bar { display: flex; gap: 6px; width: 100%; margin-top: 6px; }
+  input, select { background: #090d14; color: var(--green); border: 1px solid var(--border); padding: 7px; border-radius: 5px; font-family: Consolas, monospace; }
+</style>
+</head>
+<body>
+
+<div class="topnav">
+  <div>
+    <strong style="color:var(--green)">GREEN AGV REV 5.2a COCKPIT</strong>
+    <span style="font-size:11px;color:#94a3b8;margin-left:10px;">TC78H611 (D4/D2, D13/D12) + ESP-NOW Ch 1</span>
+  </div>
+  <div>
+    <a href="/ude">1. UDE SFR Workbench (/ude)</a>
+    <a href="/agv" class="active">2. Green AGV Arcade Cockpit (/agv)</a>
+  </div>
+</div>
+
+<div class="header">
+  <div>
+    <strong style="color:var(--green);font-size:16px;">INTERACTIVE TESTBENCH & TELEMETRY HUD</strong>
+    <span style="font-size:11px;color:#8b9bb4;margin-left:8px;">FW: {{FW_BUILD_ID}}</span>
+  </div>
+  <div id="fsmBadge" class="badge">FSM: MANUAL_ARCADE</div>
+</div>
+
+<div class="grid">
+  <!-- LEFT PANEL: TELEMETRY HUD & MODE CONTROLS -->
+  <div class="card">
+    <h3>1. Odometry, Sensors & Actuators (green_agv5.2a)</h3>
+    <div class="kpi-row">
+      <div class="kpi"><div class="lbl">VELOCITY</div><div id="valVel" class="val">0 mm/s</div></div>
+      <div class="kpi"><div class="lbl">ULTRASONIC (D27/26)</div><div id="valUs" class="val">-- mm</div></div>
+      <div class="kpi"><div class="lbl">POSE (X, Y)</div><div id="valPose" class="val">0, 0 mm</div></div>
+      <div class="kpi"><div class="lbl">HEADING / ENCODERS</div><div id="valEnc" class="val">0° (0|0)</div></div>
+    </div>
+
+    <div style="font-size:11px;color:#8b9bb4;">FLOOR SENSORS (D34/32/35) & PUSHBUTTONS (T1=D5, T2=D15)</div>
+    <div class="line-leds">
+      <div id="dotL" class="sensor-dot">L (34)</div>
+      <div id="dotM" class="sensor-dot">M (32)</div>
+      <div id="dotR" class="sensor-dot">R (35)</div>
+      <div id="dotT1" class="sensor-dot">T1 (D5)</div>
+      <div id="dotT2" class="sensor-dot">T2 (15)</div>
+    </div>
+
+    <div style="width:100%;margin:4px 0;font-size:12px;">
+      Max Speed Limit: <strong id="lblMaxSpd">75%</strong>
+      <input type="range" id="rngSpd" min="20" max="100" value="75" style="width:100%;" oninput="document.getElementById('lblMaxSpd').innerText=this.value+'%'">
+    </div>
+
+    <div style="width:100%;margin:4px 0;font-size:12px;">
+      Servo SV1 (D14): <strong id="lblServo">OFF</strong>
+      <input type="range" id="rngServo" min="0" max="15" value="7" style="width:100%;" oninput="updateServo(this.value)">
+    </div>
+
+    <div class="btn-group">
+      <button id="btnManual" class="active" onclick="setMode(1)">MANUAL ARCADE</button>
+      <button id="btnLine" onclick="setMode(2)">LINE FOLLOWER (PID)</button>
+      <button id="btnStop" class="danger" onclick="setMode(0)">E-STOP (SPACE)</button>
+    </div>
+
+    <div class="btn-group">
+      <button id="btnFrontLed" onclick="toggleLight(1)">WHITE LEDs (D25/33)</button>
+      <button id="btnRearLed" onclick="toggleLight(2)">RED LEDs (D14/23)</button>
+      <button onclick="triggerHorn()">BUZZER (D32)</button>
+      <button id="btnServoEn" onclick="toggleServoMode()">SERVO SV1</button>
+    </div>
+
+    <div class="btn-group">
+      <button onclick="resetOdometry()">ZERO ODOM</button>
+      <button onclick="setEcoMode()">80MHz ECO</button>
+      <button onclick="wakeSlaveOta()">240MHz + OTA</button>
+      <button onclick="sendRaw('I2C SCAN')">I2C / APDS9960</button>
+    </div>
+  </div>
+
+  <!-- CENTER PANEL: LIVE ULTRASONIC RADAR & ODOMETRY MAP -->
+  <div class="card">
+    <h3>2. Live Ultrasonic Radar & Trajectory Map</h3>
+    <canvas id="radarCanvas" width="320" height="310"></canvas>
+    <div class="key-hint">Cyan = AGV Pose & Heading | Red Dots = Ultrasonic Obstacles (HC-SR04)</div>
+  </div>
+
+  <!-- RIGHT PANEL: TOUCH JOYSTICK & WASD GAMEPAD -->
+  <div class="card">
+    <h3>3. Touch Joystick & WASD / Arrow Drive</h3>
+    <canvas id="joyCanvas" width="250" height="250"></canvas>
+    <div class="key-hint">
+      PC: Hold <strong>W / A / S / D</strong> or <strong>Arrow Keys</strong> (Space = E-Stop)<br>
+      Mobile: Drag Virtual Analog Stick | Differential Output: <span id="lblPwmOut" style="color:var(--neon);">L:0% R:0%</span>
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM BAR: DIRECT CORE-0 DAEMON COMMAND & SFR CONSOLE -->
+<div class="card" style="margin-top:10px;">
+  <h3>4. Core-0 Bare-Metal Register & Wire Protocol Console</h3>
+  <div class="cmd-bar">
+    <input id="cmdIn" type="text" value="ESPNOW STATUS" style="flex:1;" placeholder="Enter Wire Command (e.g. STATUS, ESPNOW STATUS, I2C SCAN, R 3FF4804C)">
+    <button style="flex:0 0 120px;" onclick="sendManualCmd()">SEND WIRE CMD</button>
+  </div>
+  <pre id="cmdOut" style="width:100%;margin:6px 0 0 0;padding:8px;background:#070a0e;color:var(--green);font-size:11px;border-radius:4px;overflow-x:auto;">Ready.</pre>
+</div>
+
+<script>
+let agvMode = 1;
+let auxMask = 0;
+let servoEn = false;
+let servoNib = 7;
+let joyX = 0, joyY = 0;
+let pendingMagic = 0x01;
+let keys = {};
+let inFlight = false;
+let trail = [];
+let hits = [];
+
+const joyCv = document.getElementById('joyCanvas');
+const joyCtx = joyCv.getContext('2d');
+const radCv = document.getElementById('radarCanvas');
+const radCtx = radCv.getContext('2d');
+
+function setMode(m) {
+  agvMode = m;
+  if (m !== 1) { joyX = 0; joyY = 0; drawJoystick(); }
+  document.getElementById('btnManual').classList.toggle('active', m === 1);
+  document.getElementById('btnLine').classList.toggle('active', m === 2);
+  computeControlWordHex(0x01);
+}
+
+function toggleLight(bit) {
+  auxMask ^= bit;
+  document.getElementById('btnFrontLed').classList.toggle('active', (auxMask & 1) !== 0);
+  document.getElementById('btnRearLed').classList.toggle('active', (auxMask & 2) !== 0);
+  computeControlWordHex(0x01);
+}
+
+function triggerHorn() {
+  auxMask |= 0x04;
+  setTimeout(() => { auxMask &= ~0x04; }, 220);
+}
+
+function toggleServoMode() {
+  servoEn = !servoEn;
+  document.getElementById('btnServoEn').classList.toggle('active', servoEn);
+  document.getElementById('lblServo').innerText = servoEn ? `Angle #${servoNib}` : 'OFF';
+}
+
+function updateServo(val) {
+  servoNib = parseInt(val, 10) & 0x0F;
+  if (!servoEn) toggleServoMode();
+  else document.getElementById('lblServo').innerText = `Angle #${servoNib}`;
+}
+
+function resetOdometry() {
+  trail = []; hits = [];
+  pendingMagic = 0x0F;
+}
+
+function setEcoMode() {
+  pendingMagic = 0x0D;
+  document.getElementById('cmdOut').innerText = "Queued Magic 0xD: Slave AGV switching to 80 MHz Low-Power Eco Mode.";
+}
+
+function wakeSlaveOta() {
+  pendingMagic = 0x0E;
+  document.getElementById('cmdOut').innerText = "Queued Magic 0xE: Slave AGV boosting to 240 MHz & opening SoftAP 'ESP32_AGV_OTA'.";
+}
+
+window.addEventListener('keydown', e => {
+  if (document.activeElement.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === ' ') { setMode(0); e.preventDefault(); return; }
+  keys[k] = true;
+  updateKeyboardVector();
+});
+window.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  delete keys[k];
+  updateKeyboardVector();
+});
+
+function updateKeyboardVector() {
+  let vx = 0, vy = 0;
+  if (keys['w'] || keys['arrowup'])    vy += 1;
+  if (keys['s'] || keys['arrowdown'])  vy -= 1;
+  if (keys['d'] || keys['arrowright']) vx += 1;
+  if (keys['a'] || keys['arrowleft'])  vx -= 1;
+  joyX = vx; joyY = vy;
+  drawJoystick();
+  computeControlWordHex(pendingMagic);
+}
+
+let dragging = false;
+function handleJoyPointer(e) {
+  if (!dragging) return;
+  const rect = joyCv.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  const cx = joyCv.width / 2, cy = joyCv.height / 2, maxR = 85;
+  let dx = clientX - rect.left - cx;
+  let dy = clientY - rect.top - cy;
+  const dist = Math.hypot(dx, dy);
+  if (dist > maxR) { dx = (dx / dist) * maxR; dy = (dy / dist) * maxR; }
+  joyX = dx / maxR;
+  joyY = -dy / maxR;
+  if (agvMode === 0) setMode(1);
+  drawJoystick();
+  computeControlWordHex(pendingMagic);
+}
+joyCv.addEventListener('mousedown', e => { dragging = true; handleJoyPointer(e); });
+window.addEventListener('mousemove', handleJoyPointer);
+window.addEventListener('mouseup', () => {
+  if (dragging) { dragging = false; joyX = 0; joyY = 0; drawJoystick(); computeControlWordHex(pendingMagic); }
+});
+joyCv.addEventListener('touchstart', e => { dragging = true; handleJoyPointer(e); e.preventDefault(); }, {passive:false});
+joyCv.addEventListener('touchmove', e => { handleJoyPointer(e); e.preventDefault(); }, {passive:false});
+joyCv.addEventListener('touchend', () => {
+  dragging = false; joyX = 0; joyY = 0; drawJoystick(); computeControlWordHex(pendingMagic);
+});
+
+function drawJoystick() {
+  const cx = joyCv.width / 2, cy = joyCv.height / 2, maxR = 85;
+  joyCtx.clearRect(0, 0, joyCv.width, joyCv.height);
+  joyCtx.strokeStyle = '#243044'; joyCtx.lineWidth = 2;
+  joyCtx.beginPath(); joyCtx.arc(cx, cy, maxR, 0, Math.PI * 2); joyCtx.stroke();
+  joyCtx.beginPath(); joyCtx.moveTo(cx - maxR, cy); joyCtx.lineTo(cx + maxR, cy);
+  joyCtx.moveTo(cx, cy - maxR); joyCtx.lineTo(cx, cy + maxR); joyCtx.stroke();
+
+  const kx = cx + joyX * maxR, ky = cy - joyY * maxR;
+  joyCtx.fillStyle = 'rgba(0, 242, 254, 0.25)';
+  joyCtx.strokeStyle = '#00f2fe'; joyCtx.lineWidth = 3;
+  joyCtx.beginPath(); joyCtx.arc(kx, ky, 26, 0, Math.PI * 2); joyCtx.fill(); joyCtx.stroke();
+}
+drawJoystick();
+
+function computeTankSpeeds() {
+  const maxSpd = parseInt(document.getElementById('rngSpd').value, 10) || 75;
+  let left = (joyY + joyX * 0.75) * maxSpd;
+  let right = (joyY - joyX * 0.75) * maxSpd;
+  left = Math.max(-100, Math.min(100, Math.round(left)));
+  right = Math.max(-100, Math.min(100, Math.round(right)));
+  return { left, right };
+}
+
+function computeControlWordHex(magicNib) {
+  const { left, right } = computeTankSpeeds();
+  document.getElementById('lblPwmOut').innerText = `L:${left}% R:${right}%`;
+  const uL = left & 0xFF;
+  const uR = right & 0xFF;
+  const fullAux = (auxMask & 0x07) | (servoEn ? 0x08 : 0x00) | ((servoNib & 0x0F) << 4);
+  const word = (((magicNib & 0x0F) << 28) | ((agvMode & 0x0F) << 24) | ((fullAux & 0xFF) << 16) | (uL << 8) | uR) >>> 0;
+  return word.toString(16).toUpperCase().padStart(8, '0');
+}
+
+// SINGLE NON-OVERLAPPING 200ms SYNC LOOP (Zero TCP Socket Exhaustion!)
+setInterval(async () => {
+  if (inFlight) return;
+  inFlight = true;
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 450);
+  try {
+    const hexWord = computeControlWordHex(pendingMagic);
+    pendingMagic = 0x01;
+    const resp = await fetch('/cmd?q=' + encodeURIComponent('SYNC ' + hexWord), { signal: ctrl.signal });
+    const txt = (await resp.text()).trim();
+    const parts = txt.split(/\s+/);
+    if (parts.length >= 4) {
+      const w1 = parseInt(parts[0], 16) >>> 0;
+      const w2 = parseInt(parts[1], 16) >>> 0;
+      const w3 = parseInt(parts[2], 16) >>> 0;
+      const w4 = parseInt(parts[3], 16) >>> 0;
+
+      const encL = (w1 >> 16) & 0xFFFF; const encLs = (encL & 0x8000) ? encL - 0x10000 : encL;
+      const encR = w1 & 0xFFFF;         const encRs = (encR & 0x8000) ? encR - 0x10000 : encR;
+      const usMm = (w2 >>> 16) & 0xFFFF;
+      const senMask = (w2 >>> 8) & 0xFF;
+      const st = w2 & 0xFF;
+
+      const xRaw = (w3 >>> 16) & 0xFFFF; const xMm = (xRaw & 0x8000) ? xRaw - 0x10000 : xRaw;
+      const yRaw = w3 & 0xFFFF;          const yMm = (yRaw & 0x8000) ? yRaw - 0x10000 : yRaw;
+      const tRaw = (w4 >>> 16) & 0xFFFF; const thRad = ((tRaw & 0x8000) ? tRaw - 0x10000 : tRaw) / 1000.0;
+      const vRaw = w4 & 0xFFFF;          const vMms = (vRaw & 0x8000) ? vRaw - 0x10000 : vRaw;
+
+      const stNames = ['IDLE_SAFE', 'MANUAL_ARCADE', 'LINE_FOLLOWER_PID', 'SLAM_STEP', 'FAULT_OBSTACLE_HOLD'];
+      document.getElementById('fsmBadge').innerText = 'FSM: ' + (stNames[st] || st);
+      document.getElementById('valVel').innerText = `${vMms} mm/s`;
+      document.getElementById('valUs').innerText = usMm < 3500 ? `${usMm} mm` : 'CLEAR';
+      document.getElementById('valPose').innerText = `${xMm}, ${yMm}`;
+      document.getElementById('valEnc').innerText = `${Math.round(thRad * 57.3)}° (${encLs}|${encRs})`;
+
+      document.getElementById('dotL').classList.toggle('active', (senMask & 4) !== 0);
+      document.getElementById('dotM').classList.toggle('active', (senMask & 2) !== 0);
+      document.getElementById('dotR').classList.toggle('active', (senMask & 1) !== 0);
+      document.getElementById('dotT1').classList.toggle('btn-on', (senMask & 8) !== 0);
+      document.getElementById('dotT2').classList.toggle('btn-on', (senMask & 16) !== 0);
+
+      updateRadarCanvas(xMm, yMm, thRad, usMm);
+    }
+  } catch (e) {}
+  clearTimeout(tid);
+  inFlight = false;
+}, 200);
+
+function updateRadarCanvas(xMm, yMm, thRad, usMm) {
+  const cx = radCv.width / 2, cy = radCv.height / 2, scale = 0.08;
+  if (trail.length === 0 || Math.hypot(xMm - trail[trail.length-1].x, yMm - trail[trail.length-1].y) > 15) {
+    trail.push({x: xMm, y: yMm});
+    if (trail.length > 250) trail.shift();
+  }
+  if (usMm > 20 && usMm < 2200) {
+    const hx = xMm + (usMm + 95) * Math.cos(thRad);
+    const hy = yMm + (usMm + 95) * Math.sin(thRad);
+    hits.push({x: hx, y: hy});
+    if (hits.length > 400) hits.shift();
+  }
+
+  radCtx.clearRect(0, 0, radCv.width, radCv.height);
+  radCtx.strokeStyle = '#162030'; radCtx.lineWidth = 1;
+  [500, 1000, 1500].forEach(r => {
+    radCtx.beginPath(); radCtx.arc(cx, cy, r * scale, 0, Math.PI * 2); radCtx.stroke();
+  });
+
+  radCtx.strokeStyle = '#0284c7'; radCtx.lineWidth = 2;
+  radCtx.beginPath();
+  trail.forEach((p, i) => {
+    const px = cx + p.x * scale, py = cy - p.y * scale;
+    if (i === 0) radCtx.moveTo(px, py); else radCtx.lineTo(px, py);
+  });
+  radCtx.stroke();
+
+  radCtx.fillStyle = '#ff1744';
+  hits.forEach(h => {
+    radCtx.fillRect(cx + h.x * scale - 2, cy - h.y * scale - 2, 4, 4);
+  });
+
+  const rx = cx + xMm * scale, ry = cy - yMm * scale;
+  radCtx.fillStyle = '#00e676';
+  radCtx.beginPath(); radCtx.arc(rx, ry, 5, 0, Math.PI * 2); radCtx.fill();
+  radCtx.strokeStyle = '#00f2fe'; radCtx.lineWidth = 2;
+  radCtx.beginPath(); radCtx.moveTo(rx, ry);
+  radCtx.lineTo(rx + Math.cos(thRad) * 18, ry - Math.sin(thRad) * 18);
+  radCtx.stroke();
+}
+
+async function sendRaw(cmd) {
+  const r = await fetch('/cmd?q=' + encodeURIComponent(cmd));
+  document.getElementById('cmdOut').innerText = await r.text();
+}
+function sendManualCmd() { sendRaw(document.getElementById('cmdIn').value); }
+</script>
+</body>
+</html>

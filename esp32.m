@@ -1,7 +1,9 @@
 classdef esp32 < handle
 %ESP32 Lightweight Object-Oriented Facade over the esp32_cli.m engine and esp32_flash.m
 %   Usage examples:
-%     esp32().Flash('C:\Users\tomas\MATLAB\esp32_workbench_v3\sketches\beep_fast\beep_fast.ino')
+%     esp32().Verbose('on');                    % Enable live FSM & Wire-Protocol tracing
+%     esp32().Fsm();                            % Display current FSM state
+%     esp32().Flash('C:\Users\tomas\MATLAB\esp32_workbench_gemini\firmware\esp32_bridge_ota\beep_fast.ino')
 %     dev = esp32('192.168.4.1');               % Connect via Wi-Fi
 %     dev = esp32('ESP32_BT_BRIDGE');           % Connect via Bluetooth SPP
 %     dev = esp32('COM8');                      % Connect via USB Serial
@@ -17,13 +19,27 @@ classdef esp32 < handle
             end
         end
 
+        function out = Verbose(~, varargin)
+            if nargout > 0
+                out = esp32_cli('verbose', varargin{:});
+            else
+                esp32_cli('verbose', varargin{:});
+            end
+        end
+
+        function out = Fsm(~)
+            if nargout > 0
+                out = esp32_cli('fsm');
+            else
+                esp32_cli('fsm');
+            end
+        end
+
         function ok = Connect(~, target, varargin)
-            % Connect via Wi-Fi IP, USB COM port, or Bluetooth ('bt:ESP32_BT_BRIDGE')
             ok = esp32_cli('connect', target, varargin{:});
         end
 
         function ok = ConnectBluetooth(~, btNameOrAddress, channel)
-            % Explicit helper for Bluetooth Classic SPP connection
             if nargin < 2 || isempty(btNameOrAddress)
                 btNameOrAddress = 'ESP32_BT_BRIDGE';
             end
@@ -44,12 +60,10 @@ classdef esp32 < handle
         end
 
         function ok = Flash(~, pathToFile, varargin)
-            % Allows: esp32().Flash('C:\path\sketch.ino') or esp32().Flash(path, '--wifi')
             ok = esp32_flash(pathToFile, varargin{:});
         end
 
         function out = Reg(~, nameOrAddr, varargin)
-            % Supports both hex address (0x3FF44004) and SFR name ('GPIO_OUT_REG')
             if nargout > 0
                 out = esp32_cli('reg', nameOrAddr, varargin{:});
             else
@@ -58,8 +72,6 @@ classdef esp32 < handle
         end
 
         function out = Bits(~, nameOrAddr, fieldOrMsb, varargin)
-            % Supports symbolic bitfield: dev.Bits('GPIO_OUT_REG', 'GPIO2', 1)
-            % or numeric range:           dev.Bits(0x3FF44004, 2, 2, 1)
             if nargout > 0
                 out = esp32_cli('bits', nameOrAddr, fieldOrMsb, varargin{:});
             else
@@ -68,7 +80,6 @@ classdef esp32 < handle
         end
 
         function out = Sfr(~, varargin)
-            % Search or inspect registers in databases/esp32_sfr.json
             if nargout > 0
                 out = esp32_cli('sfr', varargin{:});
             else
@@ -119,8 +130,29 @@ classdef esp32 < handle
             end
         end
 
+        function out = DualDeploy(~, varargin)
+            out = esp32_dual_deploy(varargin{:});
+        end
+
+        function out = Ui(~, templateName)
+            out = esp32_cli('ui', templateName);
+        end
+
+        function out = Role(~, roleName)
+            out = esp32_cli('role', roleName);
+        end
+
+        function out = EspNow(~, subCmd)
+            if nargin < 2, subCmd = 'STATUS'; end
+            out = esp32_cli('espnow', subCmd);
+        end
+
+        function out = Slam(~, targetEndpoint)
+            if nargin < 2, targetEndpoint = '192.168.4.1'; end
+            out = green_agv_slam_mapper(targetEndpoint);
+        end
+
         function Web(~)
-            % Opens the on-chip Web Register Workbench in the default browser
             esp32_cli('web');
         end
 

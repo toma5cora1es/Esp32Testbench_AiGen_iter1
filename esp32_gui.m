@@ -1,6 +1,6 @@
 function esp32_gui()
 %ESP32_GUI Responsive Graphical Interface styled after PLS UDE® (Backed by esp32_cli & esp32_sfr.json).
-%   Opens the visual hardware testbench without blocking the MATLAB console.
+%   Includes explicit Live Scope Acquisition FSM and a Verbose Backend Trace toggle in the Top Bar.
 
     fig = findall(0, 'Type', 'figure', 'Tag', 'ESP32_UDE_GUI');
     if ~isempty(fig)
@@ -8,12 +8,11 @@ function esp32_gui()
         return;
     end
 
-    % Load compiled SFR database (databases/esp32_sfr.json)
     sfrDb = esp32_cli('sfr');
     allRegNames = string(fieldnames(sfrDb.registers));
 
-    fig = uifigure('Name', 'UDE® ESP32 Workbench — SFR Database, CLI & Hardware Testbench', ...
-        'Position', [60 60 1240 760], 'Tag', 'ESP32_UDE_GUI', ...
+    fig = uifigure('Name', 'UDE® ESP32 Workbench — SFR Database, CLI, Explicit FSM & Hardware Testbench', ...
+        'Position', [60 60 1280 760], 'Tag', 'ESP32_UDE_GUI', ...
         'Color', [0.12 0.13 0.16]);
 
     mainGrid = uigridlayout(fig, [3 1]);
@@ -23,10 +22,10 @@ function esp32_gui()
     mainGrid.RowSpacing = 8;
 
     % =========================================================================
-    % 1. TOP BAR: Connection (USB Serial / Bluetooth / Wi-Fi) + Web UI + LED
+    % 1. TOP BAR: Connection + Web UI + LED + Verbose FSM Trace Toggle
     % =========================================================================
-    topBar = uigridlayout(mainGrid, [1 8]);
-    topBar.ColumnWidth = {115, 175, 90, 95, 135, 125, '1x', 135};
+    topBar = uigridlayout(mainGrid, [1 9]);
+    topBar.ColumnWidth = {115, 165, 85, 90, 130, 120, 130, '1x', 120};
     topBar.Padding = [6 6 6 6];
 
     uilabel(topBar, 'Text', 'Target (COM/BT/IP):', 'FontColor', 'w', 'FontWeight', 'bold');
@@ -41,7 +40,7 @@ function esp32_gui()
     end
 
     targetDrop = uidropdown(topBar, 'Editable', 'on', ...
-        'Items', unique([string(defaultTarget), "192.168.4.1", "COM9", "bt:ESP32_BT_BRIDGE", "COM11", serialportlist("all")], 'stable'), ...
+        'Items', unique([string(defaultTarget), "192.168.4.1", "COM8", "COM9", "bt:ESP32_BT_BRIDGE", "COM11", serialportlist("all")], 'stable'), ...
         'Value', defaultTarget);
 
     btnConnect = uibutton(topBar, 'Text', 'Connect', ...
@@ -52,8 +51,12 @@ function esp32_gui()
         'BackgroundColor', [0.15 0.45 0.85], 'FontColor', 'w', 'FontWeight', 'bold');
     btnWebUi = uibutton(topBar, 'Text', 'Open Web Portal', ...
         'BackgroundColor', [0.55 0.28 0.72], 'FontColor', 'w', 'FontWeight', 'bold');
+    btnVerbose = uibutton(topBar, ...
+        'Text', ternary(s.Verbose, 'Trace: ON', 'Trace: OFF'), ...
+        'BackgroundColor', ternary(s.Verbose, [0.16 0.55 0.45], [0.35 0.35 0.40]), ...
+        'FontColor', 'w', 'FontWeight', 'bold');
 
-    lblStatus = uilabel(topBar, 'Text', sprintf('SFR DB Loaded (%d regs). Ready.', numel(allRegNames)), ...
+    lblStatus = uilabel(topBar, 'Text', sprintf('FSM: %s | SFR DB (%d regs)', s.Phase, numel(allRegNames)), ...
         'FontColor', [0.75 0.85 1.0], 'FontName', 'Consolas');
 
     btnScan = uibutton(topBar, 'Text', 'Scan COM / BT', ...
@@ -125,7 +128,7 @@ function esp32_gui()
     end
 
     % =========================================================================
-    % --- TAB 3: REDESIGNED MULTI-CHANNEL ADC1 VOLTMETER & LIVE OSCILLOSCOPE ---
+    % --- TAB 3: MULTI-CHANNEL ADC1 VOLTMETER & EXPLICIT LIVE SCOPE FSM ---
     % =========================================================================
     tabChart = uitab(tabs, 'Title', '3. Multi-Channel ADC1 Voltmeter & Live Scope');
     adcMainGrid = uigridlayout(tabChart, [2 2]);
@@ -134,7 +137,6 @@ function esp32_gui()
     adcMainGrid.ColumnSpacing = 10;
     adcMainGrid.RowSpacing = 8;
 
-    % --- Top Control Bar of Tab 3 ---
     adcTopCtrl = uigridlayout(adcMainGrid, [1 7]);
     adcTopCtrl.Layout.Row = 1;
     adcTopCtrl.Layout.Column = [1 2];
@@ -155,11 +157,10 @@ function esp32_gui()
         'Value', 'ESP32 11dB Calibrated (V)');
     btnClearChart = uibutton(adcTopCtrl, 'Text', 'Clear Scope', ...
         'BackgroundColor', [0.55 0.22 0.22], 'FontColor', 'w');
-    lblAdcHint = uilabel(adcTopCtrl, ...
+    uilabel(adcTopCtrl, ...
         'Text', 'IMPORTANT: Connect Power Supply GND (-) to ESP32 GND! Only ADC1 (Left Header) works with Wi-Fi.', ...
         'FontColor', [0.95 0.65 0.20], 'FontWeight', 'bold', 'FontSize', 11);
 
-    % --- Left Panel: Physical ESP-WROOM-32 Pinout Order & Live 6-Ch Voltmeters ---
     pnlAdcLeft = uipanel(adcMainGrid, ...
         'Title', 'ESP-WROOM-32 Left Header (Top-to-Bottom below EN) — Click Row to Select');
     pnlAdcLeft.Layout.Row = 2;
@@ -169,7 +170,6 @@ function esp32_gui()
     leftGrid.RowHeight = {95, '1x', 110};
     leftGrid.Padding = [6 6 6 6];
 
-    % Big Digital Multimeter Readout Box
     pnlDmm = uipanel(leftGrid, 'BackgroundColor', [0.07 0.09 0.12]);
     dmmGrid = uigridlayout(pnlDmm, [2 2]);
     dmmGrid.RowHeight = {'1.3x', '1x'};
@@ -187,7 +187,6 @@ function esp32_gui()
         'FontColor', [0.75 0.78 0.85], 'FontName', 'Consolas', 'FontSize', 11, ...
         'HorizontalAlignment', 'right');
 
-    % Physical 6-Pin ADC1 Table (Ordered Top-to-Bottom as on ESP-WROOM-32 Left Header)
     adcPinList    = [36, 39, 34, 35, 32, 33];
     adcBoardLabel = {'Pin 2 (below EN): VP / SVP', ...
                      'Pin 3 (below EN): VN / SVN', ...
@@ -209,9 +208,8 @@ function esp32_gui()
         'ColumnWidth', {62, 155, 68, 72, 82, 'auto'}, ...
         'Data', initAdcRows, 'FontName', 'Consolas', 'SelectionType', 'row');
     tblAdcChannels.Selection = 1;
-    selectedAdcIdx = 1; % Default to row 1 (GPIO 36 / VP)
+    selectedAdcIdx = 1;
 
-    % Wiring Guide & Troubleshooting Box
     pnlGuide = uipanel(leftGrid, 'Title', 'Why did my Power Supply (0.5V / 1.0V) not show up?');
     guideGrid = uigridlayout(pnlGuide, [1 1]);
     guideGrid.Padding = [4 2 4 2];
@@ -222,8 +220,7 @@ function esp32_gui()
         "3. DO NOT USE ADC2 WITH WI-FI: Pins GPIO 4, 2, 15, 0, 25, 26, 27, 14, 12, 13 are ADC2 and are disabled by hardware when Wi-Fi is on."; ...
         "4. QUICK FIND: Connect your 0.5V or 1.0V wire to any of the 6 pins above and click [Scan All 6 Pins (Auto-Find)]."]);
 
-    % --- Right Panel: Real-Time Oscilloscope Chart ---
-    pnlScope = uipanel(adcMainGrid, 'Title', 'Real-Time ADC1 Voltage Oscilloscope');
+    pnlScope = uipanel(adcMainGrid, 'Title', 'Real-Time ADC1 Voltage Oscilloscope (Scope FSM: SCOPE_IDLE)');
     pnlScope.Layout.Row = 2;
     pnlScope.Layout.Column = 2;
     scopeGrid = uigridlayout(pnlScope, [1 1]);
@@ -237,12 +234,12 @@ function esp32_gui()
     grid(ax, 'on');
     hold(ax, 'on');
 
-    lineColors = [0.00 0.45 0.74; ... % GPIO 36 (Blue)
-                  0.85 0.33 0.10; ... % GPIO 39 (Orange)
-                  0.16 0.65 0.35; ... % GPIO 34 (Green)
-                  0.75 0.25 0.75; ... % GPIO 35 (Purple)
-                  0.93 0.69 0.13; ... % GPIO 32 (Gold)
-                  0.30 0.75 0.93];    % GPIO 33 (Cyan)
+    lineColors = [0.00 0.45 0.74; ...
+                  0.85 0.33 0.10; ...
+                  0.16 0.65 0.35; ...
+                  0.75 0.25 0.75; ...
+                  0.93 0.69 0.13; ...
+                  0.30 0.75 0.93];
 
     adcLines = gobjects(1, 6);
     for k = 1:6
@@ -253,8 +250,8 @@ function esp32_gui()
     legend(ax, 'Location', 'northwest');
     sampleCount = 0;
     selectedPinHistory = [];
+    scopeFsmState = 'SCOPE_IDLE';
 
-    % Non-blocking Live Stream Timer
     adcTimer = timer('ExecutionMode', 'fixedSpacing', 'Period', 0.25, ...
         'BusyMode', 'drop', 'TimerFcn', @(~,~) on_adc_timer_tick());
 
@@ -300,7 +297,7 @@ function esp32_gui()
     txtDump = uitextarea(dumpGrid, 'Editable', 'off', 'FontName', 'Consolas', 'FontSize', 12);
 
     % =========================================================================
-    % 3. BOTTOM BAR: "CLI Command Echo" (Full Transparency for Students)
+    % 3. BOTTOM BAR: "CLI Command Echo"
     % =========================================================================
     botBar = uigridlayout(mainGrid, [1 2]);
     botBar.ColumnWidth = {170, '1x'};
@@ -310,31 +307,45 @@ function esp32_gui()
         'Value', '>> esp32_cli connect 192.168.4.1', ...
         'FontName', 'Consolas', 'BackgroundColor', [0.08 0.09 0.11], 'FontColor', [0.4 0.95 0.5]);
 
-    % Clean up timer if window closes or tab changes
     fig.CloseRequestFcn = @(~,~) on_close_gui();
     tabs.SelectionChangedFcn = @(~, evt) on_tab_changed(evt);
 
-    % Initialize SFR Table
     populate_sfr_table();
 
     % =========================================================================
-    % CALLBACKS
+    % CALLBACKS & EXPLICIT SCOPE FSM TRANSITIONS
     % =========================================================================
+    function transition_scope_fsm(nextScopeState, reasonStr)
+        prev = scopeFsmState;
+        scopeFsmState = nextScopeState;
+        pnlScope.Title = sprintf('Real-Time ADC1 Voltage Oscilloscope (Scope FSM: %s)', scopeFsmState);
+        esp32_io('trace', 'esp32_gui.m', sprintf('SCOPE_FSM: %s -> %s', prev, nextScopeState), reasonStr);
+    end
+
     function on_close_gui()
-        stop_live_adc_stream();
+        stop_live_adc_stream('GUI window closed');
         try delete(adcTimer); catch, end
         delete(fig);
     end
 
     function on_tab_changed(evt)
         if evt.NewValue ~= tabChart
-            stop_live_adc_stream();
+            stop_live_adc_stream('User switched away from Tab 3');
         end
     end
 
     function echo_cli(cmdStr)
         edtCliEcho.Value = ['>> ' cmdStr];
         fprintf('CLI Echo: %s\n', cmdStr);
+    end
+
+    btnVerbose.ButtonPushedFcn = @(~,~) on_toggle_verbose();
+    function on_toggle_verbose()
+        stNow = esp32_io('state');
+        newVerb = ~stNow.Verbose;
+        esp32_cli('verbose', ternary(newVerb, 'on', 'off'));
+        btnVerbose.Text = ternary(newVerb, 'Trace: ON', 'Trace: OFF');
+        btnVerbose.BackgroundColor = ternary(newVerb, [0.16 0.55 0.45], [0.35 0.35 0.40]);
     end
 
     dropPeriph.ValueChangedFcn = @(~,~) populate_sfr_table();
@@ -356,7 +367,7 @@ function esp32_gui()
                 sel = sel(startsWith(sel, prefix));
             end
             if ~isempty(q)
-                sel = sel(contains(sel, q));
+                sel = sel(contains(q, sel) | contains(sel, q));
             end
             if numel(sel) > 45
                 sel = sel(1:45);
@@ -433,13 +444,13 @@ function esp32_gui()
         lblStatus.Text = 'Scanning Serial & Bluetooth SPP devices...';
         drawnow;
         avail = esp32_cli('scan');
-        targetDrop.Items = unique(["192.168.4.1", "COM9", "bt:ESP32_BT_BRIDGE", "COM11", avail], 'stable');
+        targetDrop.Items = unique(["192.168.4.1", "COM8", "COM9", "bt:ESP32_BT_BRIDGE", "COM11", avail], 'stable');
         lblStatus.Text = 'Scan complete. Select a target from the dropdown.';
     end
 
     btnConnect.ButtonPushedFcn = @(~,~) on_connect();
     function on_connect()
-        stop_live_adc_stream();
+        stop_live_adc_stream('Connecting transport');
         t = strtrim(targetDrop.Value);
         echo_cli(sprintf('esp32_cli connect %s', t));
         lblStatus.Text = sprintf('Connecting to %s...', t);
@@ -447,7 +458,8 @@ function esp32_gui()
         try
             esp32_cli('connect', t);
             st = esp32_cli('status');
-            lblStatus.Text = ['Connected: ' st];
+            sNow = esp32_io('state');
+            lblStatus.Text = sprintf('FSM: %s | %s', sNow.Phase, st);
             lblStatus.FontColor = [0.4 0.95 0.5];
             on_refresh_regs();
         catch ME
@@ -458,10 +470,10 @@ function esp32_gui()
 
     btnDisconnect.ButtonPushedFcn = @(~,~) on_disconnect();
     function on_disconnect()
-        stop_live_adc_stream();
+        stop_live_adc_stream('Disconnecting transport');
         echo_cli('esp32_cli disconnect');
         esp32_cli('disconnect');
-        lblStatus.Text = 'Status: DISCONNECTED';
+        lblStatus.Text = 'FSM: DISCONNECTED';
         lblStatus.FontColor = [0.9 0.7 0.3];
     end
 
@@ -560,15 +572,19 @@ function esp32_gui()
         if strcmp(adcTimer.Running, 'off')
             btnLiveStream.Text = '■ Stop Live Stream';
             btnLiveStream.BackgroundColor = [0.75 0.22 0.22];
+            nextSt = ternary(contains(dropPlotMode.Value, 'All 6'), 'STREAM_ALL_6_PINS', 'STREAM_SINGLE_PIN');
+            transition_scope_fsm(nextSt, 'User started live 250ms scope timer');
             start(adcTimer);
         else
-            stop_live_adc_stream();
+            stop_live_adc_stream('User clicked Stop Live Stream');
         end
     end
 
-    function stop_live_adc_stream()
+    function stop_live_adc_stream(reasonStr)
+        if nargin < 1, reasonStr = 'Timer stopped'; end
         if isvalid(adcTimer) && strcmp(adcTimer.Running, 'on')
             stop(adcTimer);
+            transition_scope_fsm('SCOPE_IDLE', reasonStr);
         end
         if isvalid(btnLiveStream)
             btnLiveStream.Text = '▶ Start Live Stream';
@@ -578,13 +594,13 @@ function esp32_gui()
 
     function on_adc_timer_tick()
         if ~isvalid(fig)
-            stop_live_adc_stream();
+            stop_live_adc_stream('Figure invalid');
             return;
         end
         try
             sample_selected_or_all(true);
         catch
-            stop_live_adc_stream();
+            stop_live_adc_stream('ADC read exception during timer tick');
         end
     end
 
@@ -595,9 +611,12 @@ function esp32_gui()
             return;
         end
         if contains(dropCalMode.Value, 'Calibrated')
-            % ESP32 11dB attenuation characteristic compensation (~140mV zero offset, ~3.15V saturation)
-            v = 0.11 + (rawVal / 4095.0) * 3.05;
-            if v > 3.30, v = 3.30; end
+            % Keysight E36312A CH3 Verified 11dB Calibration Law
+            v = 0.108 + (rawVal / 4095.0) * 3.227;
+            if rawVal > 3100
+                v = v - 0.135 * (((rawVal - 3100) / 995.0) ^ 1.6);
+            end
+            v = min(max(v, 0.0), 3.30);
         else
             v = (rawVal / 4095.0) * 3.30;
         end
@@ -629,9 +648,7 @@ function esp32_gui()
         end
         tblAdcChannels.Data = d;
 
-        % Automatically highlight the pin that has a non-zero test voltage applied
         if autoSelectBest
-            % Prefer pins reading in the user's bench supply range (0.20V .. 3.15V)
             inRange = find(voltVals >= 0.20 & voltVals <= 3.15);
             if ~isempty(inRange)
                 [~, relIdx] = max(voltVals(inRange));
@@ -651,8 +668,14 @@ function esp32_gui()
 
     function sample_selected_or_all(fromTimer)
         if contains(dropPlotMode.Value, 'All 6')
+            if fromTimer && ~strcmp(scopeFsmState, 'STREAM_ALL_6_PINS')
+                transition_scope_fsm('STREAM_ALL_6_PINS', 'Dropdown switched to All 6 ADC1 Pins');
+            end
             scan_all_6_adc_pins(false);
             return;
+        end
+        if fromTimer && ~strcmp(scopeFsmState, 'STREAM_SINGLE_PIN')
+            transition_scope_fsm('STREAM_SINGLE_PIN', 'Dropdown switched to Single Pin');
         end
         idx = selectedAdcIdx;
         p = adcPinList(idx);
@@ -700,7 +723,7 @@ function esp32_gui()
 
     btnDoFlash.ButtonPushedFcn = @(~,~) on_flash();
     function on_flash()
-        stop_live_adc_stream();
+        stop_live_adc_stream('Flashing firmware');
         fPath = strtrim(edtFlashPath.Value);
         flag = '--wifi';
         if contains(dropFlashMode.Value, 'usb'), flag = '--usb'; end

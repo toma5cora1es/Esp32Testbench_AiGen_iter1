@@ -1,7 +1,9 @@
 function varargout = esp32_cli(cmd, varargin)
-%ESP32_CLI CLI-First Workbench for ESP32 (SFR JSON Database, Registers, Pins, ADC, DAC, PWM, Touch, I2C, SPI, Flash OTA, Web, GUI).
+%ESP32_CLI CLI-First Workbench for ESP32 with Explicit FSM & Verbose Silicon Tracing.
 %
 % CONSOLE USAGE (PURE CLI SYNTAX):
+%   esp32_cli verbose [on | off | history]      % Toggle live backend FSM & wire-protocol trace or view log
+%   esp32_cli fsm                               % Inspect current Transport & Command FSM state snapshot
 %   esp32_cli scan                              % List COM ports (with Registry & PnP driver info)
 %   esp32_cli debug                             % Run autonomous PowerShell & MATLAB hardware diagnostics
 %   esp32_cli connect COM8                      % Connect via USB Serial or BT Virtual COM port
@@ -27,6 +29,7 @@ function varargout = esp32_cli(cmd, varargin)
 %   esp32_cli spi 5 0x9F                        % Transfer byte over VSPI (SCK=18, MISO=19, MOSI=23, CS=5)
 %   esp32_cli beep 4 1200 150                   % Emit 1200 Hz tone for 150 ms on GPIO 4
 %   esp32_cli dump GPIO_OUT_REG 8               % Display Hex/Binary table starting at symbol/address
+%   esp32_cli hil [all | quick | audit]         % Run 7-stage autonomous HIL verification FSM
 %   esp32_cli flash my_sketch.ino --wifi        % Compile, inject Core0 Web+OTA+BT, and flash over Wi-Fi
 %   esp32_cli flash my_sketch.ino --usb         % Compile and flash via USB
 %   esp32_cli web                               % Open the on-chip Web Register Workbench in browser
@@ -40,6 +43,13 @@ function varargout = esp32_cli(cmd, varargin)
 
     action = lower(strtrim(char(cmd)));
 
+    % Trace incoming CLI command (except when querying trace/verbose itself)
+    if ~ismember(action, {'verbose', 'trace', 'fsm'})
+        argPreview = strjoin(string(cellfun(@num2str, varargin, 'UniformOutput', false)), ', ');
+        esp32_io('trace', 'esp32_cli.m', 'CLI_CMD_ENTRY', ...
+            sprintf('Command="%s" | Args=[%s]', action, argPreview));
+    end
+
     % ESP32 GPIO Base Register Addresses (Technical Reference Manual)
     GPIO_OUT_REG         = uint32(hex2dec('3FF44004'));
     GPIO_OUT_W1TS_REG    = uint32(hex2dec('3FF44008'));
@@ -48,7 +58,35 @@ function varargout = esp32_cli(cmd, varargin)
     GPIO_IN_REG          = uint32(hex2dec('3FF4403C'));
 
     switch action
+        case {'verbose', 'trace', 'log'}
+            if isempty(varargin)
+                s = esp32_io('state');
+                out = esp32_io('verbose', ~s.Verbose);
+            elseif any(strcmpi(char(varargin{1}), {'history', 'show', 'list', 'dump'}))
+                out = esp32_io('history');
+            else
+                out = esp32_io('verbose', varargin{1});
+            end
+            if nargout > 0, varargout{1} = out; end
+
+        case 'fsm'
+            s = esp32_io('state');
+            fprintf('\n=== ESP32 Workbench Live FSM Snapshot ===\n');
+            fprintf('  Current FSM Phase  : %s\n', s.Phase);
+            fprintf('  Last Transition    : %s\n', s.LastTransition);
+            fprintf('  Active Transport   : %s\n', upper(s.Mode));
+            fprintf('  Target Endpoint    : %s\n', ternary_str(~isempty(s.Target), s.Target, '(None)'));
+            fprintf('  Mutex Busy Lock    : %d\n', s.Busy);
+            fprintf('  Verbose Tracing    : %s\n', ternary_str(s.Verbose, 'ON', 'OFF'));
+            fprintf('  Trace Buffer Count : %d events (run "esp32_cli verbose history" to view)\n', numel(s.TraceHistory));
+            if ~isempty(s.LastError)
+                fprintf('  Last Recorded Err  : %s\n', s.LastError);
+            end
+            fprintf('=========================================\n\n');
+            if nargout > 0, varargout{1} = s; end
+
         case 'scan'
+            esp32_io('trace', 'esp32_cli.m', 'SCAN_PORTS', 'Enumerating serialportlist + Windows WMI PnP & SERIALCOMM Registry');
             ports = serialportlist("all");
             avail = serialportlist("available");
             pnpDesc = get_windows_port_descriptions();
@@ -88,13 +126,14 @@ function varargout = esp32_cli(cmd, varargin)
         case {'status', 'ping', 'state'}
             s = esp32_io('state');
             if strcmp(s.Mode, 'none')
-                fprintf('[ESP32] Status: DISCONNECTED\n');
+                fprintf('[ESP32] Status: DISCONNECTED (FSM Phase: %s)\n', s.Phase);
                 if nargout > 0, varargout{1} = s; end
                 return;
             end
             resp = esp32_io('cmd', 'STATUS');
             if nargout == 0
-                fprintf('[ESP32] Mode: %s | Target: %s | Response: %s\n', upper(s.Mode), s.Target, resp);
+                fprintf('[ESP32] FSM: %s | Mode: %s | Target: %s | Response: %s\n', ...
+                    s.Phase, upper(s.Mode), s.Target, resp);
             else
                 varargout{1} = resp;
             end
@@ -134,6 +173,7 @@ function varargout = esp32_cli(cmd, varargin)
             end
 
             query = upper(strtrim(string(varargin{1})));
+            esp32_io('trace', 'esp32_cli.m', 'SFR_DB_LOOKUP', sprintf('Querying esp32_sfr.json for "%s"', query));
             if isfield(db.registers, query)
                 rMeta = db.registers.(query);
                 fprintf('\n=== SFR Definition: %s (%s) ===\n', query, rMeta.address);
@@ -181,6 +221,8 @@ function varargout = esp32_cli(cmd, varargin)
             end
 
             if numel(varargin) == 1
+                esp32_io('trace', 'esp32_cli.m', 'SFR_READ_32', ...
+                    sprintf('Reading 32-bit physical memory address 0x%s (%s) on ESP32 DPORT/AHB bus', addrHex, labelStr));
                 resp = esp32_io('cmd', ['R ' addrHex]);
                 val = parse_num(resp);
                 if nargout == 0
@@ -195,6 +237,8 @@ function varargout = esp32_cli(cmd, varargin)
             else
                 val = parse_num(varargin{2});
                 valHex = sprintf('%08X', val);
+                esp32_io('trace', 'esp32_cli.m', 'SFR_WRITE_32', ...
+                    sprintf('Writing 32-bit word 0x%s into physical address 0x%s (%s)', valHex, addrHex, labelStr));
                 resp = esp32_io('cmd', sprintf('W %s %s', addrHex, valHex));
                 rb = parse_num(resp);
                 if nargout == 0
@@ -232,9 +276,13 @@ function varargout = esp32_cli(cmd, varargin)
             end
 
             mask = bitshift(uint32(2^width - 1), lsb);
+            esp32_io('trace', 'esp32_cli.m', 'BITFIELD_RMW_STEP1', ...
+                sprintf('Target=%s | Mask=0x%08X | Step 1: Reading current 32-bit register at 0x%08X', bfLabel, mask, addr));
             curVal = esp32_cli('reg', addr);
             if ~hasNewVal
                 fieldVal = bitshift(bitand(curVal, mask), -lsb);
+                esp32_io('trace', 'esp32_cli.m', 'BITFIELD_EXTRACT', ...
+                    sprintf('(0x%08X & 0x%08X) >> %d = %u (0x%X)', curVal, mask, lsb, fieldVal, fieldVal));
                 if nargout == 0
                     fprintf('  [BITS %s] = %u (0x%X)\n', bfLabel, fieldVal, fieldVal);
                 else
@@ -244,6 +292,9 @@ function varargout = esp32_cli(cmd, varargin)
                 newField = bitand(uint32(parse_num(newValArg)), uint32(2^width - 1));
                 cleared = bitand(curVal, bitcmp(mask, 'uint32'));
                 updated = bitor(cleared, bitshift(newField, lsb));
+                esp32_io('trace', 'esp32_cli.m', 'BITFIELD_RMW_STEP2', ...
+                    sprintf('Cur=0x%08X | ClearMask=0x%08X | ShiftedField=0x%08X -> Writing Updated=0x%08X', ...
+                    curVal, bitcmp(mask, 'uint32'), bitshift(newField, lsb), updated));
                 rb = esp32_cli('reg', addr, updated);
                 if nargout == 0
                     fprintf('  [BITS %s] <= %u -> New Reg: 0x%08X\n', bfLabel, newField, rb);
@@ -264,9 +315,13 @@ function varargout = esp32_cli(cmd, varargin)
                 if numel(varargin) >= 2, pinCmd = lower(char(varargin{2})); end
             end
 
+            esp32_io('trace', 'esp32_cli.m', 'GPIO_PIN_OP', ...
+                sprintf('Dispatching GPIO %d operation "%s" to Core-0 daemon', pinNum, upper(pinCmd)));
             resp = esp32_io('cmd', sprintf('PIN %d %s', pinNum, upper(pinCmd)));
             if startsWith(resp, 'ERR') && pinNum < 32
                 mask = bitshift(uint32(1), pinNum);
+                esp32_io('trace', 'esp32_cli.m', 'GPIO_SFR_FALLBACK', ...
+                    sprintf('Daemon returned ERR; falling back to direct atomic W1TS/W1TC register access (Mask=0x%08X)', mask));
                 if any(strcmp(pinCmd, {'r', 'read'}))
                     inReg = esp32_cli('reg', GPIO_IN_REG);
                     state = double(bitand(inReg, mask) ~= 0);
@@ -308,6 +363,7 @@ function varargout = esp32_cli(cmd, varargin)
                 'D32      (Pin 6 below EN)', ...
                 'D33      (Pin 7 below EN)'};
             if isempty(varargin) || strcmpi(strtrim(char(varargin{1})), 'all')
+                esp32_io('trace', 'esp32_cli.m', 'ADC1_MULTI_SCAN', 'Scanning all 6 SAR ADC1 channels (GPIO 36,39,34,35,32,33)');
                 fprintf('\n=== ESP32 ADC1 Multi-Channel Scan (Left Header Top-to-Bottom) ===\n');
                 fprintf('  GPIO    | Board Silkscreen Position | Raw (12-Bit) | Linear V | Calibrated V (11dB)\n');
                 fprintf('  --------+---------------------------+--------------+----------+--------------------\n');
@@ -319,7 +375,11 @@ function varargout = esp32_cli(cmd, varargin)
                     rawOut(k) = r;
                     vLin = (r / 4095.0) * 3.30;
                     vCal = 0.0;
-                    if r > 0, vCal = min(0.11 + (r / 4095.0) * 3.05, 3.30); end
+                    if r > 0
+                        vCal = 0.108 + (r / 4095.0) * 3.227;
+                        if r > 3100, vCal = vCal - 0.135 * (((r - 3100) / 995.0) ^ 1.6); end
+                        vCal = min(max(vCal, 0.0), 3.30);
+                    end
                     fprintf('  GPIO %2d | %-25s | %4d / 4095  | %6.3f V | %6.3f V (%4.0f mV)\n', ...
                         p, adcLabels{k}, r, vLin, vCal, vCal * 1000);
                 end
@@ -333,6 +393,7 @@ function varargout = esp32_cli(cmd, varargin)
                 warning('ESP32:InvalidAdc1Pin', ...
                     'GPIO %d is not a valid ADC1 pin on ESP-WROOM-32! Valid ADC1 pins (left header): 36 (VP), 39 (VN), 34, 35, 32, 33.', pinNum);
             end
+            esp32_io('trace', 'esp32_cli.m', 'ADC1_SAMPLE', sprintf('Sampling 12-bit SAR ADC1 on GPIO %d', pinNum));
             resp = esp32_io('cmd', sprintf('ADC %d', pinNum));
             raw = str2double(resp);
             voltsLin = (raw / 4095.0) * 3.30;
@@ -351,8 +412,10 @@ function varargout = esp32_cli(cmd, varargin)
             end
             pinNum = double(parse_num(varargin{1}));
             valNum = min(max(double(parse_num(varargin{2})), 0), 255);
-            resp = esp32_io('cmd', sprintf('DAC %d %d', pinNum, valNum));
             vEst = (valNum / 255.0) * 3.30;
+            esp32_io('trace', 'esp32_cli.m', 'DAC_OUTPUT', ...
+                sprintf('Setting 8-bit R-2R DAC on GPIO %d to %d/255 (~%.2f V)', pinNum, valNum, vEst));
+            resp = esp32_io('cmd', sprintf('DAC %d %d', pinNum, valNum));
             if nargout == 0
                 fprintf('  [DAC GPIO %02d] <= %3d / 255 (~%.2f V) -> %s\n', pinNum, valNum, vEst, resp);
             else
@@ -366,8 +429,10 @@ function varargout = esp32_cli(cmd, varargin)
             pinNum  = double(parse_num(varargin{1}));
             freqHz  = double(parse_num(varargin{2}));
             dutyVal = min(max(double(parse_num(varargin{3})), 0), 1023);
-            resp = esp32_io('cmd', sprintf('PWM %d %d %d', pinNum, freqHz, dutyVal));
             pct = (dutyVal / 1023.0) * 100.0;
+            esp32_io('trace', 'esp32_cli.m', 'LEDC_PWM_CFG', ...
+                sprintf('Configuring LEDC Hardware PWM on GPIO %d: Freq=%d Hz, Duty=%d/1023 (%.1f%%)', pinNum, freqHz, dutyVal, pct));
+            resp = esp32_io('cmd', sprintf('PWM %d %d %d', pinNum, freqHz, dutyVal));
             if nargout == 0
                 fprintf('  [PWM GPIO %02d] <= %d Hz | Duty: %d / 1023 (%.1f%%) -> %s\n', ...
                     pinNum, freqHz, dutyVal, pct, resp);
@@ -381,6 +446,7 @@ function varargout = esp32_cli(cmd, varargin)
                            'D14 (TOUCH6 - Left)', 'D12 (TOUCH5 - Left)', 'D13 (TOUCH4 - Left)', ...
                            'D15 (TOUCH3 - Right)', 'D2  (TOUCH2 - Right)', 'D4  (TOUCH0 - Right)'};
             if isempty(varargin) || strcmpi(strtrim(char(varargin{1})), 'all')
+                esp32_io('trace', 'esp32_cli.m', 'TOUCH_SCAN_ALL', 'Scanning all 9 capacitive touch sensors');
                 fprintf('\n=== ESP32 Capacitive Touch Sensor Scan (9 Pads on 30-Pin Board) ===\n');
                 fprintf('  GPIO    | Board Silkscreen & Touch Ch | Raw Period Count (Lower = Touched)\n');
                 fprintf('  --------+-----------------------------+-----------------------------------\n');
@@ -409,6 +475,7 @@ function varargout = esp32_cli(cmd, varargin)
             else
                 subCmd = upper(strtrim(char(strjoin(string(varargin), ' '))));
             end
+            esp32_io('trace', 'esp32_cli.m', 'I2C_BUS_OP', sprintf('Executing I2C bus transaction on SDA=21, SCL=22: "%s"', subCmd));
             resp = esp32_io('cmd', ['I2C ' subCmd]);
             if nargout == 0
                 fprintf('  [I2C (SDA=D21, SCL=D22) %s] -> %s\n', subCmd, resp);
@@ -422,6 +489,8 @@ function varargout = esp32_cli(cmd, varargin)
             end
             csPin = double(parse_num(varargin{1}));
             txByte = double(parse_num(varargin{2}));
+            esp32_io('trace', 'esp32_cli.m', 'VSPI_XFER', ...
+                sprintf('Full-Duplex VSPI transfer (SCK=18, MISO=19, MOSI=23, CS=%d) TX=0x%02X', csPin, txByte));
             resp = esp32_io('cmd', sprintf('SPI %d 0x%02X', csPin, txByte));
             if nargout == 0
                 fprintf('  [VSPI (SCK=18, MISO=19, MOSI=23, CS=%d) TX=0x%02X] -> RX=%s\n', csPin, txByte, resp);
@@ -475,6 +544,8 @@ function varargout = esp32_cli(cmd, varargin)
             end
             count = 8;
             if numel(varargin) >= 2, count = double(parse_num(varargin{2})); end
+            esp32_io('trace', 'esp32_cli.m', 'MEM_BLOCK_DUMP', ...
+                sprintf('Dumping %d contiguous 32-bit words starting at 0x%08X', count, baseAddr));
             resp = esp32_io('cmd', sprintf('D %08X %d', baseAddr, count));
             if startsWith(resp, 'ERR')
                 vals = zeros(1, count, 'uint32');
@@ -503,24 +574,26 @@ function varargout = esp32_cli(cmd, varargin)
             end
 
         case 'hil'
-                    if isempty(varargin)
-                        rep = esp32_hil('all');
-                    else
-                        rep = esp32_hil(varargin{:});
-                    end
-                    if nargout > 0, varargout{1} = rep; end
+            if isempty(varargin)
+                rep = esp32_hil('all');
+            else
+                rep = esp32_hil(varargin{:});
+            end
+            if nargout > 0, varargout{1} = rep; end
 
-                case 'pulse'
-                    pinNum = 35;
-                    timeoutUs = 50000;
-                    if numel(varargin) >= 1, pinNum = double(parse_num(varargin{1})); end
-                    if numel(varargin) >= 2, timeoutUs = double(parse_num(varargin{2})); end
-                    resp = esp32_io('cmd', sprintf('PULSE %d %d', pinNum, timeoutUs));
-                    if nargout == 0
-                        fprintf('  [PULSE GPIO %02d] -> %s\n', pinNum, resp);
-                    else
-                        varargout{1} = resp;
-                    end
+        case 'pulse'
+            pinNum = 35;
+            timeoutUs = 50000;
+            if numel(varargin) >= 1, pinNum = double(parse_num(varargin{1})); end
+            if numel(varargin) >= 2, timeoutUs = double(parse_num(varargin{2})); end
+            esp32_io('trace', 'esp32_cli.m', 'PULSE_CAPTURE', ...
+                sprintf('Measuring high/low pulse width & frequency on GPIO %d (timeout=%d us)', pinNum, timeoutUs));
+            resp = esp32_io('cmd', sprintf('PULSE %d %d', pinNum, timeoutUs));
+            if nargout == 0
+                fprintf('  [PULSE GPIO %02d] -> %s\n', pinNum, resp);
+            else
+                varargout{1} = resp;
+            end
 
         case 'flash'
             if isempty(varargin)
@@ -536,11 +609,39 @@ function varargout = esp32_cli(cmd, varargin)
                 ip = s.Target;
             end
             url = sprintf('http://%s/', ip);
+            esp32_io('trace', 'esp32_cli.m', 'LAUNCH_WEB_UI', sprintf('Opening browser at %s', url));
             fprintf('[ESP32] Opening On-Chip Web Register Workbench at %s ...\n', url);
             web(url, '-browser');
 
         case 'gui'
+            esp32_io('trace', 'esp32_cli.m', 'LAUNCH_UDE_GUI', 'Opening MATLAB UDE Workbench GUI (esp32_gui.m)');
             esp32_gui();
+
+        case {'ui', 'template'}
+            sub = 'UDE';
+            if ~isempty(varargin), sub = upper(char(varargin{1})); end
+            resp = esp32_io('cmd', ['UI ' sub]);
+            if nargout == 0, fprintf('  [WEB UI TEMPLATE] -> %s\n', resp); else, varargout{1} = resp; end
+
+        case 'role'
+            sub = 'MASTER';
+            if ~isempty(varargin), sub = upper(char(varargin{1})); end
+            resp = esp32_io('cmd', ['ROLE ' sub]);
+            if nargout == 0, fprintf('  [NODE ROLE] -> %s\n', resp); else, varargout{1} = resp; end
+
+        case 'espnow'
+            sub = 'STATUS';
+            if ~isempty(varargin), sub = upper(char(varargin{1})); end
+            resp = esp32_io('cmd', ['ESPNOW ' sub]);
+            if nargout == 0, fprintf('  [ESP-NOW BRIDGE] -> %s\n', resp); else, varargout{1} = resp; end
+
+        case {'dual', 'deploy'}
+            rep = esp32_dual_deploy(varargin{:});
+            if nargout > 0, varargout{1} = rep; end
+
+        case {'slam', 'agv'}
+            rep = green_agv_slam_mapper(varargin{:});
+            if nargout > 0, varargout{1} = rep; end
 
         otherwise
             error('Unknown command: "%s". Type "help esp32_cli" to view the command list.', action);
@@ -550,6 +651,7 @@ end
 %% --- Internal Autonomous PowerShell Diagnostics & Helpers ---
 
 function run_autonomous_powershell_diagnostics()
+    esp32_io('trace', 'esp32_cli.m', 'DIAG_START', 'Running 5-stage autonomous PowerShell & MATLAB diagnostics');
     fprintf('\n====================================================================\n');
     fprintf('  ESP32 WORKBENCH — AUTONOMOUS POWERSHELL & MATLAB DIAGNOSTICS\n');
     fprintf('====================================================================\n');
@@ -655,6 +757,7 @@ function db = get_sfr_database()
             return;
         end
     end
+    esp32_io('trace', 'esp32_cli.m', 'LOAD_SFR_JSON', sprintf('Loading compiled SFR dictionary from %s', jsonPath));
     cachedDb = jsondecode(fileread(jsonPath));
     db = cachedDb;
 end
@@ -693,6 +796,8 @@ function [addr, symName, regMeta] = resolve_sfr_address(in)
             db = get_sfr_database();
             regMeta = db.registers.(symName);
         end
+        esp32_io('trace', 'esp32_cli.m', 'RESOLVE_SFR_ADDR', ...
+            sprintf('Numeric address 0x%08X -> Symbol "%s"', addr, symName));
         return;
     end
     str = strtrim(char(in));
@@ -702,12 +807,16 @@ function [addr, symName, regMeta] = resolve_sfr_address(in)
         symName = string(uStr);
         regMeta = db.registers.(uStr);
         addr = parse_num(regMeta.address);
+        esp32_io('trace', 'esp32_cli.m', 'RESOLVE_SFR_SYMBOL', ...
+            sprintf('Symbol "%s" resolved via esp32_sfr.json -> 0x%08X', symName, addr));
         return;
     end
     if isfield(db.registers, [uStr '_REG'])
         symName = string([uStr '_REG']);
         regMeta = db.registers.([uStr '_REG']);
         addr = parse_num(regMeta.address);
+        esp32_io('trace', 'esp32_cli.m', 'RESOLVE_SFR_SYMBOL', ...
+            sprintf('Symbol "%s" resolved via esp32_sfr.json -> 0x%08X', symName, addr));
         return;
     end
     addr = parse_num(str);
@@ -717,6 +826,8 @@ function [addr, symName, regMeta] = resolve_sfr_address(in)
         symName = string(addrMap(aKey));
         regMeta = db.registers.(symName);
     end
+    esp32_io('trace', 'esp32_cli.m', 'RESOLVE_SFR_HEX', ...
+        sprintf('Hex input "%s" resolved -> 0x%08X (%s)', str, addr, symName));
 end
 
 function print_active_bitfields(bitfieldsStruct, regVal)
@@ -764,4 +875,8 @@ function b = format_bin32(val)
     b = sprintf('%s_%s_%s_%s_%s_%s_%s_%s', ...
         raw(1:4), raw(5:8), raw(9:12), raw(13:16), ...
         raw(17:20), raw(21:24), raw(25:28), raw(29:32));
+end
+
+function out = ternary_str(cond, a, b)
+    if cond, out = a; else, out = b; end
 end

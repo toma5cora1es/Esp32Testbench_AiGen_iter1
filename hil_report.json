@@ -1,6 +1,7 @@
 {
-  "timestamp": "2026-11-14 21:00:08",
+  "timestamp": "2026-11-15 20:23:49",
   "mode": "all",
+  "fsmState": "STAGE8_TEARDOWN_AND_REPORT",
   "rootDir": "C:\\Users\\tomas\\MATLAB\\esp32_workbench_gemini",
   "previousWifiSsid": "Magenta_5KQG",
   "usbPort": "COM8",
@@ -20,7 +21,7 @@
     {
       "name": "STAGE2_USB_BOOTSTRAP_AND_HEAP",
       "passed": true,
-      "details": "USB Flash OK. FW_ID=BLD_ESP32BRIDGEO_210008, HEAP_FREE=31164, NEXT_OTA_MAX=1966080"
+      "details": "USB Flash OK. FW_ID=BLD_ESP32BRIDGEO_202350, HEAP_FREE=31164, NEXT_OTA_MAX=1966080"
     },
     {
       "name": "STAGE3_SFR_REGISTER_BITFIELD_LOOPBACK",
@@ -30,22 +31,22 @@
     {
       "name": "STAGE4_ANALOG_DAC_ADC_AND_PWM_CAPTURE",
       "passed": true,
-      "details": "PWM_1000Hz_50pct: D4_Pad(1001.0Hz,50.1%) | D25->D34_Wire=1 (ADC_mid=1917, PWM=1000.0Hz/50.0%)"
+      "details": "PWM_1000Hz_50pct: D4_Pad(999.0Hz,50.0%) | D25->D34_Wire=1 (ADC_mid=1914, PWM=999.0Hz/50.0%)"
     },
     {
       "name": "STAGE5_TOUCH_I2C_SPI_BUS_VALIDATION",
       "passed": true,
-      "details": "TOUCH(D4=784,D15=1352,D32=1699) | I2C_FOUND:NONE | VSPI(TX=0xA5)->RX=0xA5 (MOSI->MISO Wire=1)"
+      "details": "TOUCH(D4=778,D15=1351,D32=1698) | I2C_FOUND:NONE | VSPI(TX=0xA5)->RX=0xA5 (MOSI->MISO Wire=1)"
     },
     {
       "name": "STAGE6_TRI_TRANSPORT_PARITY_USB_BT_WIFI",
       "passed": true,
-      "details": "USB+Wi-Fi Parity Match (0x000005DC) | USB=12.3ms, Wi-Fi=177.3ms (BT=Not Paired)"
+      "details": "USB+Wi-Fi Parity Match (0x000005DC) | USB=8.1ms, Wi-Fi=90.9ms (BT=Not Paired)"
     },
     {
       "name": "STAGE7_WIFI_OTA_END_TO_END_VERIFICATION",
       "passed": true,
-      "details": "Wi-Fi OTA Verified! New FW_ID=BLD_ESP32BRIDGEO_210154 confirmed on silicon."
+      "details": "Wi-Fi OTA Verified! New FW_ID=BLD_ESP32BRIDGEO_202621 confirmed on silicon."
     }
   ],
   "allPassed": true

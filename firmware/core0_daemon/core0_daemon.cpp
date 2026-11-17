@@ -1,9 +1,7 @@
 // ============================================================================
 // FILE: firmware/core0_daemon/core0_daemon.cpp
-// DESCRIPTION: Modular Core-0 Hardware-in-the-Loop (HIL), Register, Web Portal,
-//              Wi-Fi SoftAP OTA, USB Serial & Bluetooth Classic SPP Daemon.
-//              Concatenated automatically with web_ui.html and <sketch>.ino
-//              by esp32_flash.m during compilation.
+// DESCRIPTION: Non-Blocking Core-0 HIL, Multi-Page Web Portal (/ude & /agv),
+//              Atomic SYNC/TELEM Pipeline, ESP-NOW Master/Slave Bridge.
 // ============================================================================
 
 #include <Arduino.h>
@@ -12,22 +10,47 @@
 #include <Update.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include "BluetoothSerial.h"
 #include "esp_bt.h"
 #include "soc/gpio_reg.h"
 #include "soc/rtc_cntl_reg.h"
 #include "esp_ota_ops.h"
 
-#define _FW_BUILD_ID "{{FW_BUILD_ID}}"
+#define _FW_BUILD_ID       "{{FW_BUILD_ID}}"
+#define _DEFAULT_NODE_ROLE {{NODE_ROLE_ID}}   // 0 = STANDALONE, 1 = MASTER_HOST, 2 = SLAVE_AGV
+#define _DEFAULT_UI_PAGE   {{DEFAULT_UI_ID}}  // 0 = UDE Workbench (web_ui.html), 1 = AGV Cockpit (web_ui_agv.html)
 
 void user_setup();
 static WebServer _bgServer(80);
 static BluetoothSerial _bgSerialBT;
 static volatile bool _otaInProgress = false;
-static volatile bool _btActive = true;
+static volatile bool _btActive = false;
+static volatile bool _apActive = false;
 static size_t _otaWritten = 0;
 
-// Direct IO_MUX FUN_IE (Bit 9) Input Buffer Enabler (Compatible with ESP-IDF 5.x / Core 3.3.12)
+static volatile uint8_t  _nodeRole      = _DEFAULT_NODE_ROLE;
+static volatile uint8_t  _activeUiPage  = _DEFAULT_UI_PAGE;
+static volatile uint32_t _espNowTxCount = 0;
+static volatile uint32_t _espNowRxCount = 0;
+static volatile uint32_t _lastTxMicros  = 0;
+static volatile uint32_t _lastRttMicros = 0;
+static int               _keysightPin   = 4;
+static uint8_t           _bcastMac[6]   = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static uint8_t           _peerMac[6]    = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+typedef struct __attribute__((packed)) {
+  uint8_t  magic;      // 0xA5 = Master->Slave Cmd, 0x5A = Slave->Master Telemetry
+  uint8_t  role;       // Sender role
+  uint16_t seq;        // Sequence number
+  uint32_t store0_cmd; // 0x3FF4804C: [31:28]Magic | [27:24]Mode | [23:16]Aux | [15:8]CmdL | [7:0]CmdR
+  uint32_t store1_enc; // 0x3FF48050: [31:16]EncL  | [15:0]EncR
+  uint32_t store2_sen; // 0x3FF48054: [31:16]US_mm | [15:8]SenMask  | [7:0]FSM_State
+  uint32_t store3_pos; // 0x3FF48058: [31:16]X_mm  | [15:0]Y_mm
+  uint32_t store4_vel; // 0x3FF4805C: [31:16]Th_mrad | [15:0]Vel_mms
+} EspNowBridgePacket_t;
+
 static void _enablePadInput(int p) {
   static const uint8_t muxOff[40] = {
     0x44,0x88,0x40,0x84,0x48,0x6C,0x60,0x64,0x68,0x54,
@@ -40,7 +63,6 @@ static void _enablePadInput(int p) {
   }
 }
 
-// Bare-Metal Register Pulse-Width, Frequency & Duty-Cycle Analyzer
 static String _measurePulse(int pin, uint32_t timeoutUs) {
   if (pin < 0 || pin > 39) return "ERR|INVALID_PIN";
   _enablePadInput(pin);
@@ -74,14 +96,122 @@ static String _measurePulse(int pin, uint32_t timeoutUs) {
   return String(b);
 }
 
-// Injected HTML/JS Payload from firmware/core0_daemon/web_ui.html
-static const char _WEB_UI[] PROGMEM = R"rawliteral(
-{{WEB_UI_HTML}}
+static const char _WEB_UI_UDE[] PROGMEM = R"rawliteral(
+{{WEB_UI_UDE_HTML}}
 )rawliteral";
 
-// Unified Command Executor (Shared across USB Serial, Wi-Fi HTTP, and Bluetooth SPP)
+static const char _WEB_UI_AGV[] PROGMEM = R"rawliteral(
+{{WEB_UI_AGV_HTML}}
+)rawliteral";
+
+static void _onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+  if (len != (int)sizeof(EspNowBridgePacket_t)) return;
+  const EspNowBridgePacket_t* pkt = (const EspNowBridgePacket_t*)data;
+  _espNowRxCount++;
+  if (info && info->src_addr) {
+    memcpy(_peerMac, info->src_addr, 6);
+  }
+
+  if (pkt->magic == 0xA5 && _nodeRole == 2) {
+    *(volatile uint32_t*)0x3FF4804CUL = pkt->store0_cmd;
+    uint8_t cmdMagic = (pkt->store0_cmd >> 28) & 0x0F;
+
+    if (cmdMagic == 0x0E && !_apActive) {
+      setCpuFrequencyMhz(240);
+      WiFi.mode(WIFI_AP_STA);
+      WiFi.softAP("ESP32_AGV_OTA", "12345678", 1);
+      WiFi.setSleep(false);
+      _apActive = true;
+    } else if (cmdMagic == 0x0D) {
+      if (_apActive) { WiFi.softAPdisconnect(true); WiFi.mode(WIFI_STA); _apActive = false; }
+      setCpuFrequencyMhz(80);
+    }
+
+    EspNowBridgePacket_t reply;
+    reply.magic      = 0x5A;
+    reply.role       = _nodeRole;
+    reply.seq        = pkt->seq;
+    reply.store0_cmd = *(volatile uint32_t*)0x3FF4804CUL;
+    reply.store1_enc = *(volatile uint32_t*)0x3FF48050UL;
+    reply.store2_sen = *(volatile uint32_t*)0x3FF48054UL;
+    reply.store3_pos = *(volatile uint32_t*)0x3FF48058UL;
+    reply.store4_vel = *(volatile uint32_t*)0x3FF4805CUL;
+    esp_now_send(_bcastMac, (const uint8_t*)&reply, sizeof(reply));
+  } else if (pkt->magic == 0x5A && _nodeRole != 2) {
+    *(volatile uint32_t*)0x3FF48050UL = pkt->store1_enc;
+    *(volatile uint32_t*)0x3FF48054UL = pkt->store2_sen;
+    *(volatile uint32_t*)0x3FF48058UL = pkt->store3_pos;
+    *(volatile uint32_t*)0x3FF4805CUL = pkt->store4_vel;
+    _lastRttMicros = micros() - _lastTxMicros;
+    if (_keysightPin >= 0 && _keysightPin < 32) {
+      *(volatile uint32_t*)GPIO_OUT_W1TC_REG = (1UL << _keysightPin);
+    }
+  }
+}
+
+static void _sendEspNowMasterBurst() {
+  EspNowBridgePacket_t pkt;
+  pkt.magic      = 0xA5;
+  pkt.role       = _nodeRole;
+  pkt.seq        = (uint16_t)(++_espNowTxCount);
+  pkt.store0_cmd = *(volatile uint32_t*)0x3FF4804CUL;
+  pkt.store1_enc = *(volatile uint32_t*)0x3FF48050UL;
+  pkt.store2_sen = *(volatile uint32_t*)0x3FF48054UL;
+  pkt.store3_pos = *(volatile uint32_t*)0x3FF48058UL;
+  pkt.store4_vel = *(volatile uint32_t*)0x3FF4805CUL;
+
+  if (_keysightPin >= 0 && _keysightPin < 32) {
+    *(volatile uint32_t*)GPIO_ENABLE_W1TS_REG = (1UL << _keysightPin);
+    *(volatile uint32_t*)GPIO_OUT_W1TS_REG    = (1UL << _keysightPin);
+  }
+  _lastTxMicros = micros();
+  esp_now_send(_bcastMac, (const uint8_t*)&pkt, sizeof(pkt));
+}
+
+static void _initEspNowSubsystem() {
+  if (esp_now_init() != ESP_OK) return;
+  esp_now_register_recv_cb(_onEspNowRecv);
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, _bcastMac, 6);
+  peerInfo.channel = 1;
+  peerInfo.encrypt = false;
+  if (!esp_now_is_peer_exist(_bcastMac)) {
+    esp_now_add_peer(&peerInfo);
+  }
+}
+
 static String _bgExec(String line) {
   line.trim();
+  if (line.length() == 0) return "";
+
+  // 1. ATOMIC SINGLE-LINE TELEMETRY DUMP FOR MATLAB TEST SEQUENCE RECORDER
+  if (line == "TELEM" || line == "telem") {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "TELEM|%08X %08X %08X %08X %08X|RTT_US:%lu|RX:%lu",
+             *(volatile uint32_t*)0x3FF4804CUL,
+             *(volatile uint32_t*)0x3FF48050UL,
+             *(volatile uint32_t*)0x3FF48054UL,
+             *(volatile uint32_t*)0x3FF48058UL,
+             *(volatile uint32_t*)0x3FF4805CUL,
+             (unsigned long)_lastRttMicros,
+             (unsigned long)_espNowRxCount);
+    return String(buf);
+  }
+
+  // 2. COMBINED WRITE-CMD + READ-TELEMETRY FOR WEB UI (Cut HTTP Requests in Half!)
+  if (line.startsWith("SYNC ") || line.startsWith("sync ")) {
+    uint32_t v = strtoul(line.substring(5).c_str(), NULL, 16);
+    *(volatile uint32_t*)0x3FF4804CUL = v;
+    if (_nodeRole == 1) _sendEspNowMasterBurst();
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%08X %08X %08X %08X",
+             *(volatile uint32_t*)0x3FF48050UL,
+             *(volatile uint32_t*)0x3FF48054UL,
+             *(volatile uint32_t*)0x3FF48058UL,
+             *(volatile uint32_t*)0x3FF4805CUL);
+    return String(buf);
+  }
+
   if (line.startsWith("R ") || line.startsWith("r ") || line.startsWith("REG ") || line.startsWith("reg ")) {
     int sp = line.indexOf(' ');
     uint32_t a = strtoul(line.substring(sp + 1).c_str(), NULL, 16);
@@ -92,6 +222,9 @@ static String _bgExec(String line) {
     uint32_t a = strtoul(line.substring(2, sp).c_str(), NULL, 16);
     uint32_t v = strtoul(line.substring(sp + 1).c_str(), NULL, 16);
     *(volatile uint32_t*)a = v;
+    if (a == 0x3FF4804CUL && _nodeRole == 1) {
+      _sendEspNowMasterBurst();
+    }
     char b[16]; snprintf(b, sizeof(b), "0x%08X", *(volatile uint32_t*)a); return String(b);
   }
   if (line.startsWith("D ") || line.startsWith("d ")) {
@@ -105,6 +238,40 @@ static String _bgExec(String line) {
       if (i > 0) out += " "; out += b;
     }
     return out;
+  }
+  if (line.startsWith("UI ") || line.startsWith("ui ")) {
+    String sub = line.substring(3); sub.trim(); sub.toUpperCase();
+    if (sub == "AGV" || sub == "1") _activeUiPage = 1;
+    else if (sub == "UDE" || sub == "WORKBENCH" || sub == "0") _activeUiPage = 0;
+    return String("UI_PAGE:") + (_activeUiPage == 1 ? "AGV_COCKPIT" : "UDE_WORKBENCH");
+  }
+  if (line.startsWith("ROLE ") || line.startsWith("role ")) {
+    String sub = line.substring(5); sub.trim(); sub.toUpperCase();
+    if (sub == "MASTER" || sub == "1") _nodeRole = 1;
+    else if (sub == "SLAVE" || sub == "2") _nodeRole = 2;
+    else _nodeRole = 0;
+    return String("ROLE_SET:") + (_nodeRole == 1 ? "MASTER" : (_nodeRole == 2 ? "SLAVE" : "STANDALONE"));
+  }
+  if (line.startsWith("ESPNOW ") || line.startsWith("espnow ")) {
+    String sub = line.substring(7); sub.trim(); sub.toUpperCase();
+    if (sub == "BURST" || sub == "PING") {
+      uint32_t prevRx = _espNowRxCount;
+      _sendEspNowMasterBurst();
+      uint32_t tWait = micros();
+      while (_espNowRxCount == prevRx && (micros() - tWait < 8000)) {
+        delayMicroseconds(100);
+      }
+    }
+    char macStr[24];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             _peerMac[0], _peerMac[1], _peerMac[2], _peerMac[3], _peerMac[4], _peerMac[5]);
+    return String("ESPNOW_STAT|ROLE:") + String(_nodeRole) +
+           "|CPU_MHZ:" + String(getCpuFrequencyMhz()) +
+           "|MY_MAC:" + WiFi.macAddress() +
+           "|PEER_MAC:" + String(macStr) +
+           "|TX:" + String(_espNowTxCount) +
+           "|RX:" + String(_espNowRxCount) +
+           "|RTT_US:" + String(_lastRttMicros);
   }
   if (line.startsWith("PIN ") || line.startsWith("pin ")) {
     int sp = line.indexOf(' ', 4);
@@ -205,24 +372,76 @@ static String _bgExec(String line) {
   if (line == "INFO" || line == "info") {
     const esp_partition_t* runPart = esp_ota_get_running_partition();
     const esp_partition_t* nextPart = esp_ota_get_next_update_partition(NULL);
-    return String("FW_ID:") + _FW_BUILD_ID + "|CORE:" + String(ESP.getSdkVersion()) + "|RUN_PART:" + (runPart ? runPart->label : "?") + "|NEXT_PART:" + (nextPart ? nextPart->label : "?") + "|HEAP_FREE:" + String(ESP.getFreeHeap()) + "|FLASH_MB:" + String(ESP.getFlashChipSize()/1048576) + "|NEXT_OTA_MAX:" + String(nextPart ? nextPart->size : 0);
+    return String("FW_ID:") + _FW_BUILD_ID +
+           "|ROLE:" + (_nodeRole == 1 ? "MASTER" : (_nodeRole == 2 ? "SLAVE" : "STANDALONE")) +
+           "|CPU_MHZ:" + String(getCpuFrequencyMhz()) +
+           "|UI:" + (_activeUiPage == 1 ? "AGV" : "UDE") +
+           "|CORE:" + String(ESP.getSdkVersion()) +
+           "|RUN_PART:" + (runPart ? runPart->label : "?") +
+           "|NEXT_PART:" + (nextPart ? nextPart->label : "?") +
+           "|HEAP_FREE:" + String(ESP.getFreeHeap()) +
+           "|FLASH_MB:" + String(ESP.getFlashChipSize()/1048576) +
+           "|NEXT_OTA_MAX:" + String(nextPart ? nextPart->size : 0);
   }
-  if (line == "STATUS" || line == "status") return String("ESP32_READY|FW_ID:") + _FW_BUILD_ID + "|UPTIME_MS:" + String(millis()) + "|IP:" + WiFi.softAPIP().toString() + "|BT:" + (_btActive ? "ESP32_BT_BRIDGE" : "OFF") + "|HEAP:" + String(ESP.getFreeHeap());
+  if (line == "STATUS" || line == "status") {
+    return String("ESP32_READY|FW_ID:") + _FW_BUILD_ID +
+           "|ROLE:" + (_nodeRole == 1 ? "MASTER" : (_nodeRole == 2 ? "SLAVE" : "STANDALONE")) +
+           "|UPTIME_MS:" + String(millis()) +
+           "|IP:" + (_apActive ? WiFi.softAPIP().toString() : String("0.0.0.0")) +
+           "|MAC:" + WiFi.macAddress() +
+           "|ESPNOW_RX:" + String(_espNowRxCount) +
+           "|RTT_US:" + String(_lastRttMicros) +
+           "|BT:" + (_btActive ? "ESP32_BT_BRIDGE" : "OFF") +
+           "|HEAP:" + String(ESP.getFreeHeap());
+  }
   return "ERR";
 }
 
-// Core-0 FreeRTOS Daemon Task
 static void _bgTask(void* pv) {
   esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
-  _bgSerialBT.begin("ESP32_BT_BRIDGE");
-  WiFi.mode(WIFI_AP); WiFi.softAP("ESP32_LAB", "12345678");
-  WiFi.setSleep(false);
+  Serial.setTimeout(15); // Fast 15ms timeout so Serial never stalls HTTP or ESP-NOW
+
+  if (_nodeRole == 2) {
+    setCpuFrequencyMhz(80);
+    WiFi.mode(WIFI_STA);
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    _btActive = false;
+    _apActive = false;
+  } else {
+    _bgSerialBT.begin("ESP32_BT_BRIDGE");
+    _btActive = true;
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP("ESP32_LAB", "12345678", 1);
+    WiFi.setSleep(false);
+    _apActive = true;
+  }
+
+  _initEspNowSubsystem();
+
   _bgServer.enableCORS(true);
   _bgServer.on("/", HTTP_GET, [](){
-    if (_bgServer.hasArg("json")) _bgServer.send(200, "application/json", "{\"status\":\"ESP32_READY\",\"fw_id\":\"" _FW_BUILD_ID "\",\"ip\":\"" + WiFi.softAPIP().toString() + "\"}");
-    else _bgServer.send_P(200, "text/html", _WEB_UI);
+    if (_bgServer.hasArg("json")) {
+      _bgServer.send(200, "application/json", "{\"status\":\"ESP32_READY\",\"fw_id\":\"" _FW_BUILD_ID "\",\"ip\":\"" + WiFi.softAPIP().toString() + "\"}");
+    } else if (_bgServer.hasArg("ui")) {
+      String u = _bgServer.arg("ui"); u.toLowerCase();
+      if (u == "agv") _activeUiPage = 1; else if (u == "ude") _activeUiPage = 0;
+      _bgServer.send_P(200, "text/html", (_activeUiPage == 1) ? _WEB_UI_AGV : _WEB_UI_UDE);
+    } else {
+      _bgServer.send_P(200, "text/html", (_activeUiPage == 1) ? _WEB_UI_AGV : _WEB_UI_UDE);
+    }
   });
-  _bgServer.on("/cmd", HTTP_GET, [](){ _bgServer.send(200, "text/plain", _bgExec(_bgServer.arg("q"))); });
+  _bgServer.on("/ude", HTTP_GET, [](){ _activeUiPage = 0; _bgServer.send_P(200, "text/html", _WEB_UI_UDE); });
+  _bgServer.on("/agv", HTTP_GET, [](){ _activeUiPage = 1; _bgServer.send_P(200, "text/html", _WEB_UI_AGV); });
+  _bgServer.on("/switch", HTTP_GET, [](){
+    _activeUiPage = (_activeUiPage == 0) ? 1 : 0;
+    _bgServer.sendHeader("Location", "/");
+    _bgServer.send(302, "text/plain", "Switching UI template...");
+  });
+  _bgServer.on("/cmd", HTTP_GET, [](){
+    _bgServer.sendHeader("Connection", "close");
+    _bgServer.send(200, "text/plain", _bgExec(_bgServer.arg("q")));
+  });
   _bgServer.on("/reg", HTTP_GET, [](){
     uint32_t a = strtoul(_bgServer.arg("addr").c_str(), NULL, 16);
     if (_bgServer.hasArg("val")) *(volatile uint32_t*)a = strtoul(_bgServer.arg("val").c_str(), NULL, 16);
@@ -238,7 +457,6 @@ static void _bgTask(void* pv) {
     _bgServer.sendHeader("Connection", "close");
     _bgServer.send(ok ? 200 : 500, "text/plain", ok ? ("OTA_OK_REBOOTING|" _FW_BUILD_ID) : "OTA_FAIL");
     _bgServer.client().flush();
-    Serial.printf("[OTA] Finalizing (%s), rebooting...\n", ok ? "SUCCESS" : "FAILED");
     delay(800);
     _otaInProgress = false;
     if (ok) ESP.restart();
@@ -246,36 +464,65 @@ static void _bgTask(void* pv) {
     HTTPUpload& u = _bgServer.upload();
     if (u.status == UPLOAD_FILE_START) {
       _otaInProgress = true; _otaWritten = 0;
-      if (_btActive) {
-        Serial.println("[OTA] Disabling Bluetooth SPP to maximize 2.4GHz Wi-Fi OTA throughput & RAM...");
-        _bgSerialBT.end(); btStop(); _btActive = false;
-      }
-      Serial.printf("[OTA] Starting Update (Free Heap: %u bytes)...\n", ESP.getFreeHeap());
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { Update.printError(Serial); }
+      if (_btActive) { _bgSerialBT.end(); btStop(); _btActive = false; }
+      Update.begin(UPDATE_SIZE_UNKNOWN);
     } else if (u.status == UPLOAD_FILE_WRITE) {
-      if (Update.write(u.buf, u.currentSize) != u.currentSize) { Update.printError(Serial); }
+      Update.write(u.buf, u.currentSize);
       _otaWritten += u.currentSize;
       vTaskDelay(1);
     } else if (u.status == UPLOAD_FILE_END) {
-      if (Update.end(true)) Serial.printf("[OTA] Written %u bytes successfully!\n", (unsigned int)_otaWritten);
-      else Update.printError(Serial);
+      Update.end(true);
     }
   });
   _bgServer.begin();
+
+  static String serialLine = "";
+  static String btLine = "";
+  uint32_t lastEspNowTick = millis();
+
   for(;;) {
-    _bgServer.handleClient();
+    if (_apActive) {
+      _bgServer.handleClient();
+    }
     if (!_otaInProgress) {
-      if (Serial.available()) { String r = _bgExec(Serial.readStringUntil('\n')); if(r.length()) Serial.println(r); }
-      if (_btActive && _bgSerialBT.available()) { String r = _bgExec(_bgSerialBT.readStringUntil('\n')); if(r.length()) _bgSerialBT.println(r); }
-      vTaskDelay(pdMS_TO_TICKS(2));
+      // Non-blocking character accumulator for UART0 Serial
+      while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r') {
+          if (serialLine.length() > 0) {
+            String r = _bgExec(serialLine);
+            serialLine = "";
+            if (r.length() > 0) Serial.println(r);
+          }
+        } else if (serialLine.length() < 120) {
+          serialLine += c;
+        }
+      }
+      // Non-blocking character accumulator for Bluetooth SPP
+      while (_btActive && _bgSerialBT.available()) {
+        char c = (char)_bgSerialBT.read();
+        if (c == '\n' || c == '\r') {
+          if (btLine.length() > 0) {
+            String r = _bgExec(btLine);
+            btLine = "";
+            if (r.length() > 0) _bgSerialBT.println(r);
+          }
+        } else if (btLine.length() < 120) {
+          btLine += c;
+        }
+      }
+      uint32_t syncPeriodMs = (_btActive && _bgSerialBT.hasClient()) ? 50 : 25;
+      if (_nodeRole == 1 && (millis() - lastEspNowTick >= syncPeriodMs)) {
+        lastEspNowTick = millis();
+        _sendEspNowMasterBurst();
+      }
+      vTaskDelay(pdMS_TO_TICKS(1));
     }
   }
 }
 
-// === CONCATENATED USER SKETCH (.ino) BELOW ===
 {{USER_SKETCH_CODE}}
 
-// === BOOTSTRAP ENTRYPOINT ===
 void setup() {
   Serial.begin(115200);
   xTaskCreatePinnedToCore(_bgTask, "OTA_Core0", 12288, NULL, 2, NULL, 0);
