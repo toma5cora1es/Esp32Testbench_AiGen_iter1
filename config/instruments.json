@@ -1,0 +1,42 @@
+{
+  "visaAssemblyPaths": [
+    "C:\\Windows\\Microsoft.NET\\assembly\\**\\Keysight.Visa.dll",
+    "C:\\Program Files*\\Keysight\\**\\Keysight.Visa.dll",
+    "C:\\Program Files*\\IVI Foundation\\**\\Keysight.Visa.dll"
+  ],
+  "keysight_e36312a": {
+    "visaAddress": "USB0::0x2A8D::0x1102::MY59004507::0::INSTR",
+    "expectedIdnSubstr": "E36312A",
+    "timeoutMs": 5000,
+    "channels": {
+      "slaveLogic":      { "ch": 1, "nominalV": 5.00, "currentLimitA": 2.00, "pinLabel": "ESP32 5V/VIN -> GND" },
+      "motorBatteryRail":{ "ch": 2, "nominalV": 4.00, "currentLimitA": 1.00, "pinLabel": "TP-BATT+ (Switch S2=ON) -> GND" },
+      "adcStimulusDc":   { "ch": 3, "nominalV": 0.00, "currentLimitA": 0.05, "maxSafeV": 3.25, "pinLabel": "ADC1 GPIO 34 -> GND" }
+    }
+  },
+  "lecroy_ws4104hd": {
+    "visaAddress": "USB0::0x05FF::0x1023::LCRY4903C20318::0::INSTR",
+    "expectedIdnSubstr": "WS4104HD",
+    "timeoutMs": 5000,
+    "channels": {
+      "espNowRttProbe": { "ch": "C1", "vdiv": 1.0, "label": "Master GPIO 4 RTT Strobe" },
+      "motorPwmProbe":  { "ch": "C2", "vdiv": 1.0, "label": "Slave Left Motor PWM" },
+      "ultrasonicProbe":{ "ch": "C3", "vdiv": 1.0, "label": "Slave HC-SR04 Trig/Echo" },
+      "railRippleProbe":{ "ch": "C4", "vdiv": 0.5, "label": "Slave 3V3/5V Rail Ripple" }
+    }
+  },
+  "tektronix_afg3252c": {
+    "visaAddress": "GPIB0::1::INSTR",
+    "expectedIdnSubstr": "AFG3252C",
+    "timeoutMs": 5000,
+    "esp32Safety": {
+      "loadImpedance": "INFinity",
+      "minAllowedV": 0.00,
+      "maxAllowedV": 3.30
+    },
+    "channels": {
+      "adcDynamicStim": { "ch": 1, "targetPin": "GPIO 36 (VP) or GPIO 34 -> GND" },
+      "encoderSim":     { "ch": 2, "targetPin": "GPIO 18 or GPIO 19 -> GND" }
+    }
+  }
+}

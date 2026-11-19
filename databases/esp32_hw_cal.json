@@ -1,31 +1,11 @@
 {
-  "instrument": {
-    "idn": "Keysight Technologies,E36312A,MY59004507,2.1.0-1.0.4-1.12",
-    "visa_address": "USB0::0x2A8D::0x1102::MY59004507::0::INSTR"
-  },
+  "last_updated": "baseline",
   "adc1_11db_calibration": {
     "offset_volts": 0.108,
     "slope_volts_per_fs": 3.227,
-    "saturation_knee_raw": 3100
-  },
-  "power_and_dropout_model": {
-    "vin_nominal_volts": 5,
-    "vin_minimum_safe_volts": 4,
-    "vin_brownout_cliff_volts": 3.8,
-    "master_ap_espnow_avg_ma": 131.09,
-    "slave_continuous_rx_espnow_ma": 136.2,
-    "slave_ota_softap_wake_ma": 147.47,
-    "slave_softap_delta_ma": 10.45,
-    "espnow_rtt_nominal_ms": 2.55,
-    "espnow_rtt_wifi_coex_mean_ms": 3.35
-  },
-  "last_updated": "2026-11-16 13:24:29",
-  "latest_p1_usb_master": {
-    "Label": "P1_USB_Master_CH1_Slave",
-    "SlaveAvgCurrent_mA": 120.87645,
-    "MasterAvgCurrent_mA": null,
-    "MeanRTT_ms": 3.40815,
-    "PacketDelivery_Pct": 100,
-    "EstAutonomy_Hours": 11.168428589688066
+    "saturation_knee_raw": 3100,
+    "knee_comp_volts": 0.135,
+    "knee_comp_exp": 1.6,
+    "vref_clamp_max_v": 3.30
   }
 }

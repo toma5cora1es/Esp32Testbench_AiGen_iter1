@@ -1,0 +1,48 @@
+{
+  "suite": "hil_validation",
+  "configTag": "quick",
+  "timestamp": "2026-11-19 10:24:34",
+  "payload": {
+    "mode": "quick",
+    "usbPort": "COM8",
+    "wifiIp": "192.168.4.1",
+    "stages": [
+      {
+        "name": "STAGE1_TOOLCHAIN_CONFIG_AND_SFR",
+        "passed": true,
+        "details": "DaemonFiles=1 | Sketch=1 | SFR=991"
+      },
+      {
+        "name": "STAGE2_USB_FLASH_AND_HEAP",
+        "passed": true,
+        "details": "ID:BLD_ESP32SFRCO_M_102307 ROLE:MASTER HEAP_FREE:34016 FLASH_MB:4 SKETCH_KB:1701 OTA_FREE_KB:1920 MHZ:240"
+      },
+      {
+        "name": "STAGE3_SFR_BITFIELD_LOOPBACK",
+        "passed": true,
+        "details": "RTC_CNTL_STORE0_REG=0xA5A55A5A | GPIO2 Hi=1 Lo=0"
+      },
+      {
+        "name": "STAGE4_LEDC_PWM_AND_PULSE_CAPTURE",
+        "passed": false,
+        "details": "GPIO4 PWM: 0.0 Hz, 0.0%"
+      },
+      {
+        "name": "STAGE5_TOUCH_I2C_SPI_BUS_PROBE",
+        "passed": false,
+        "details": "Touch=NaN | I2C_FOUND:NONE | SPI=0x00"
+      },
+      {
+        "name": "STAGE6_TRANSPORT_PARITY",
+        "passed": true,
+        "details": "USB=0x10000000 == WiFi=0x10000000"
+      },
+      {
+        "name": "STAGE8_MULTI_UI_AND_ESPNOW",
+        "passed": true,
+        "details": "AGV_COCKPIT | UDE_WORKBENCH | ESPNOW_STAT ROLE:MASTER PEER:1 TX:2 RX:1 LOSS:0 RTT_US:2999"
+      }
+    ],
+    "allPassed": false
+  }
+}

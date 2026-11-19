@@ -1,9 +1,3 @@
-// ============================================================================
-// FILE: firmware/core0_daemon/core0_daemon.cpp
-// DESCRIPTION: Non-Blocking Core-0 HIL, Multi-Page Web Portal (/ude & /agv),
-//              Atomic SYNC/TELEM Pipeline, ESP-NOW Master/Slave Bridge.
-// ============================================================================
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -12,519 +6,616 @@
 #include <SPI.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
-#include "BluetoothSerial.h"
-#include "esp_bt.h"
-#include "soc/gpio_reg.h"
+#include <esp_arduino_version.h>
+#include <BluetoothSerial.h>
+#include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
-#include "esp_ota_ops.h"
+#include "soc/io_mux_reg.h"
+#include "soc/gpio_periph.h"
+#include "esp_log.h"
 
-#define _FW_BUILD_ID       "{{FW_BUILD_ID}}"
-#define _DEFAULT_NODE_ROLE {{NODE_ROLE_ID}}   // 0 = STANDALONE, 1 = MASTER_HOST, 2 = SLAVE_AGV
-#define _DEFAULT_UI_PAGE   {{DEFAULT_UI_ID}}  // 0 = UDE Workbench (web_ui.html), 1 = AGV Cockpit (web_ui_agv.html)
+#ifndef WB_BUILD_ID
+#define WB_BUILD_ID "{{FW_BUILD_ID}}"
+#endif
+#define WB_NODE_ROLE      {{NODE_ROLE_ID}}
+#define WB_DEFAULT_UI     {{DEFAULT_UI_ID}}
+#define WB_AP_SSID        "{{WB_AP_SSID}}"
+#define WB_AP_PASS        "{{WB_AP_PASS}}"
+#define WB_BT_NAME        "{{WB_BT_NAME}}"
+#define WB_ESPNOW_CH      {{WB_ESPNOW_CH}}
+#define WB_MASTER_RTT_PIN {{WB_MASTER_RTT_PIN}}
 
 void user_setup();
-static WebServer _bgServer(80);
-static BluetoothSerial _bgSerialBT;
-static volatile bool _otaInProgress = false;
-static volatile bool _btActive = false;
-static volatile bool _apActive = false;
-static size_t _otaWritten = 0;
 
-static volatile uint8_t  _nodeRole      = _DEFAULT_NODE_ROLE;
-static volatile uint8_t  _activeUiPage  = _DEFAULT_UI_PAGE;
-static volatile uint32_t _espNowTxCount = 0;
-static volatile uint32_t _espNowRxCount = 0;
-static volatile uint32_t _lastTxMicros  = 0;
-static volatile uint32_t _lastRttMicros = 0;
-static int               _keysightPin   = 4;
-static uint8_t           _bcastMac[6]   = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-static uint8_t           _peerMac[6]    = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static const char* HTML_UDE_UI = R"WB_UI_UDE({{WEB_UI_UDE_HTML}})WB_UI_UDE";
+static const char* HTML_AGV_UI = R"WB_UI_AGV({{WEB_UI_AGV_HTML}})WB_UI_AGV";
+
+static WebServer g_http(80);
+static BluetoothSerial g_bt;
+static portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static volatile uint8_t  g_role      = WB_NODE_ROLE;
+static volatile uint8_t  g_uiId      = WB_DEFAULT_UI;
+static volatile bool     g_httpUp    = false;
+static volatile bool     g_btUp      = false;
+static volatile bool     g_hasPeer   = false;
+static volatile bool     g_otaArmed  = false;
+static volatile bool     g_pongWait  = false;
+
+static uint8_t           g_peerMac[6]   = {0};
+static uint8_t           g_bcastMac[6]  = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+static volatile uint16_t g_seq          = 0;
+static volatile uint32_t g_txPkts       = 0;
+static volatile uint32_t g_rxPkts       = 0;
+static volatile uint32_t g_lossPkts     = 0;
+static volatile uint32_t g_rttUs        = 0;
+static volatile uint32_t g_pingTxUs     = 0;
+static volatile uint32_t g_lastTelemMs  = 0;
+static volatile bool     g_syncPending  = false;
+static uint32_t          g_lastStore0   = 0x10000000;
+
+enum WbMsgType : uint8_t {
+  PKT_BEACON = 1,
+  PKT_CMD    = 2,
+  PKT_TLM    = 3,
+  PKT_PING   = 4,
+  PKT_PONG   = 5
+};
 
 typedef struct __attribute__((packed)) {
-  uint8_t  magic;      // 0xA5 = Master->Slave Cmd, 0x5A = Slave->Master Telemetry
-  uint8_t  role;       // Sender role
-  uint16_t seq;        // Sequence number
-  uint32_t store0_cmd; // 0x3FF4804C: [31:28]Magic | [27:24]Mode | [23:16]Aux | [15:8]CmdL | [7:0]CmdR
-  uint32_t store1_enc; // 0x3FF48050: [31:16]EncL  | [15:0]EncR
-  uint32_t store2_sen; // 0x3FF48054: [31:16]US_mm | [15:8]SenMask  | [7:0]FSM_State
-  uint32_t store3_pos; // 0x3FF48058: [31:16]X_mm  | [15:0]Y_mm
-  uint32_t store4_vel; // 0x3FF4805C: [31:16]Th_mrad | [15:0]Vel_mms
-} EspNowBridgePacket_t;
+  uint32_t magic;
+  uint8_t  type;
+  uint8_t  role;
+  uint16_t seq;
+  uint32_t txUs;
+  uint32_t s0;
+  uint32_t s1;
+  uint32_t s2;
+  uint32_t s3;
+  uint32_t s4;
+  uint32_t crc;
+} WbEspNowFrame;
 
-static void _enablePadInput(int p) {
-  static const uint8_t muxOff[40] = {
-    0x44,0x88,0x40,0x84,0x48,0x6C,0x60,0x64,0x68,0x54,
-    0x58,0x5C,0x34,0x38,0x30,0x3C,0x4C,0x50,0x70,0x74,
-    0x78,0x7C,0x80,0x8C,0x90,0x24,0x28,0x2C,0,0,
-    0,0,0x1C,0x20,0x14,0x18,0x04,0x08,0x0C,0x10
-  };
-  if (p >= 0 && p < 40 && muxOff[p] != 0) {
-    *(volatile uint32_t*)(0x3FF49000UL + muxOff[p]) |= (1UL << 9);
+static uint32_t calcFrameCrc(const WbEspNowFrame& f) {
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&f);
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < sizeof(WbEspNowFrame) - sizeof(uint32_t); ++i) {
+    h ^= p[i];
+    h *= 16777619u;
+  }
+  return h;
+}
+
+static inline void writeLedc(uint8_t pin, uint8_t ch, uint32_t freq, uint8_t res, uint32_t duty) {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcDetach(pin);
+  if (freq == 0 || duty == 0) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+  } else {
+    ledcAttach(pin, freq, res);
+    ledcWrite(pin, duty);
+    if (pin >= 0 && pin < SOC_GPIO_PIN_COUNT && GPIO_PIN_MUX_REG[pin]) PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[pin]);
+  }
+#else
+  ledcSetup(ch, freq, res);
+  ledcAttachPin(pin, ch);
+  ledcWrite(ch, duty);
+  if (pin >= 0 && pin < SOC_GPIO_PIN_COUNT && GPIO_PIN_MUX_REG[pin]) PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[pin]);
+#endif
+  (void)ch;
+}
+
+static const char* roleName(uint8_t r) {
+  return (r == 1) ? "MASTER" : ((r == 2) ? "SLAVE" : "STANDALONE");
+}
+
+static void applyPowerProfile(const String& prof) {
+  String p = prof;
+  p.toUpperCase();
+  if (p == "ECO") {
+    setCpuFrequencyMhz(80);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (g_btUp) { g_bt.end(); g_btUp = false; }
+  } else if (p == "BALANCED") {
+    setCpuFrequencyMhz(160);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    if (g_btUp) { g_bt.end(); g_btUp = false; }
+  } else {
+    setCpuFrequencyMhz(240);
+    esp_wifi_set_ps(WIFI_PS_NONE);
   }
 }
 
-static String _measurePulse(int pin, uint32_t timeoutUs) {
-  if (pin < 0 || pin > 39) return "ERR|INVALID_PIN";
-  _enablePadInput(pin);
-  volatile uint32_t* inReg = (pin < 32) ? (volatile uint32_t*)GPIO_IN_REG : (volatile uint32_t*)GPIO_IN1_REG;
-  uint32_t mask = (pin < 32) ? (1UL << pin) : (1UL << (pin - 32));
-  uint32_t t0 = micros();
-  bool initState = (*inReg & mask) != 0;
-  while (((*inReg & mask) != 0) == initState) {
-    if (micros() - t0 > timeoutUs) return String("HI_US:0|LO_US:0|FREQ_HZ:0.0|DUTY_PCT:") + (initState ? "100.0" : "0.0");
-  }
-  uint32_t tEdge1 = micros();
-  bool state1 = !initState;
-  while (((*inReg & mask) != 0) == state1) {
-    if (micros() - tEdge1 > timeoutUs) return "HI_US:0|LO_US:0|FREQ_HZ:0.0|DUTY_PCT:0.0";
-  }
-  uint32_t tEdge2 = micros();
-  bool state2 = !state1;
-  while (((*inReg & mask) != 0) == state2) {
-    if (micros() - tEdge2 > timeoutUs) return "HI_US:0|LO_US:0|FREQ_HZ:0.0|DUTY_PCT:0.0";
-  }
-  uint32_t tEdge3 = micros();
-  uint32_t d1 = tEdge2 - tEdge1;
-  uint32_t d2 = tEdge3 - tEdge2;
-  uint32_t hi = state1 ? d1 : d2;
-  uint32_t lo = state1 ? d2 : d1;
-  uint32_t per = hi + lo;
-  float freq = (per > 0) ? (1000000.0f / (float)per) : 0.0f;
-  float duty = (per > 0) ? ((100.0f * (float)hi) / (float)per) : 0.0f;
-  char b[96];
-  snprintf(b, sizeof(b), "HI_US:%lu|LO_US:%lu|FREQ_HZ:%.1f|DUTY_PCT:%.1f", (unsigned long)hi, (unsigned long)lo, freq, duty);
-  return String(b);
+static void ensurePeerAdded(const uint8_t* mac) {
+  if (esp_now_is_peer_exist(mac)) return;
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, mac, 6);
+  peer.channel = WB_ESPNOW_CH;
+  peer.ifidx   = WIFI_IF_STA;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
 }
 
-static const char _WEB_UI_UDE[] PROGMEM = R"rawliteral(
-{{WEB_UI_UDE_HTML}}
-)rawliteral";
+static void sendEspNowFrame(uint8_t type, uint32_t txUsOverride = 0) {
+  WbEspNowFrame f = {};
+  f.magic = 0x57424E31u;
+  f.type  = type;
+  f.role  = g_role;
+  f.seq   = ++g_seq;
+  f.txUs  = txUsOverride ? txUsOverride : micros();
+  f.s0    = REG_READ(RTC_CNTL_STORE0_REG);
+  f.s1    = REG_READ(RTC_CNTL_STORE1_REG);
+  f.s2    = REG_READ(RTC_CNTL_STORE2_REG);
+  f.s3    = REG_READ(RTC_CNTL_STORE3_REG);
+  f.s4    = REG_READ(RTC_CNTL_STORE4_REG);
+  f.crc   = calcFrameCrc(f);
 
-static const char _WEB_UI_AGV[] PROGMEM = R"rawliteral(
-{{WEB_UI_AGV_HTML}}
-)rawliteral";
-
-static void _onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
-  if (len != (int)sizeof(EspNowBridgePacket_t)) return;
-  const EspNowBridgePacket_t* pkt = (const EspNowBridgePacket_t*)data;
-  _espNowRxCount++;
-  if (info && info->src_addr) {
-    memcpy(_peerMac, info->src_addr, 6);
+  const uint8_t* dst = (g_hasPeer && type != PKT_BEACON) ? g_peerMac : g_bcastMac;
+  if (esp_now_send(dst, reinterpret_cast<const uint8_t*>(&f), sizeof(f)) == ESP_OK) {
+    g_txPkts++;
   }
+}
 
-  if (pkt->magic == 0xA5 && _nodeRole == 2) {
-    *(volatile uint32_t*)0x3FF4804CUL = pkt->store0_cmd;
-    uint8_t cmdMagic = (pkt->store0_cmd >> 28) & 0x0F;
-
-    if (cmdMagic == 0x0E && !_apActive) {
-      setCpuFrequencyMhz(240);
+static void handleMagicBits(uint32_t s0) {
+  uint8_t magic = (s0 >> 28) & 0x0F;
+  if (magic == 0xD) {
+    applyPowerProfile("ECO");
+  } else if (magic == 0xE) {
+    applyPowerProfile("TURBO");
+    if (g_role == 2 && !g_httpUp) {
       WiFi.mode(WIFI_AP_STA);
-      WiFi.softAP("ESP32_AGV_OTA", "12345678", 1);
-      WiFi.setSleep(false);
-      _apActive = true;
-    } else if (cmdMagic == 0x0D) {
-      if (_apActive) { WiFi.softAPdisconnect(true); WiFi.mode(WIFI_STA); _apActive = false; }
-      setCpuFrequencyMhz(80);
-    }
-
-    EspNowBridgePacket_t reply;
-    reply.magic      = 0x5A;
-    reply.role       = _nodeRole;
-    reply.seq        = pkt->seq;
-    reply.store0_cmd = *(volatile uint32_t*)0x3FF4804CUL;
-    reply.store1_enc = *(volatile uint32_t*)0x3FF48050UL;
-    reply.store2_sen = *(volatile uint32_t*)0x3FF48054UL;
-    reply.store3_pos = *(volatile uint32_t*)0x3FF48058UL;
-    reply.store4_vel = *(volatile uint32_t*)0x3FF4805CUL;
-    esp_now_send(_bcastMac, (const uint8_t*)&reply, sizeof(reply));
-  } else if (pkt->magic == 0x5A && _nodeRole != 2) {
-    *(volatile uint32_t*)0x3FF48050UL = pkt->store1_enc;
-    *(volatile uint32_t*)0x3FF48054UL = pkt->store2_sen;
-    *(volatile uint32_t*)0x3FF48058UL = pkt->store3_pos;
-    *(volatile uint32_t*)0x3FF4805CUL = pkt->store4_vel;
-    _lastRttMicros = micros() - _lastTxMicros;
-    if (_keysightPin >= 0 && _keysightPin < 32) {
-      *(volatile uint32_t*)GPIO_OUT_W1TC_REG = (1UL << _keysightPin);
+      WiFi.softAP(WB_AP_SSID, WB_AP_PASS, WB_ESPNOW_CH);
+      g_http.begin();
+      g_httpUp = true;
     }
   }
 }
 
-static void _sendEspNowMasterBurst() {
-  EspNowBridgePacket_t pkt;
-  pkt.magic      = 0xA5;
-  pkt.role       = _nodeRole;
-  pkt.seq        = (uint16_t)(++_espNowTxCount);
-  pkt.store0_cmd = *(volatile uint32_t*)0x3FF4804CUL;
-  pkt.store1_enc = *(volatile uint32_t*)0x3FF48050UL;
-  pkt.store2_sen = *(volatile uint32_t*)0x3FF48054UL;
-  pkt.store3_pos = *(volatile uint32_t*)0x3FF48058UL;
-  pkt.store4_vel = *(volatile uint32_t*)0x3FF4805CUL;
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+static void onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+  const uint8_t* mac = info ? info->src_addr : nullptr;
+#else
+static void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
+#endif
+  if (!mac || len != (int)sizeof(WbEspNowFrame)) return;
+  WbEspNowFrame f;
+  memcpy(&f, data, sizeof(f));
+  if (f.magic != 0x57424E31u || f.crc != calcFrameCrc(f)) return;
 
-  if (_keysightPin >= 0 && _keysightPin < 32) {
-    *(volatile uint32_t*)GPIO_ENABLE_W1TS_REG = (1UL << _keysightPin);
-    *(volatile uint32_t*)GPIO_OUT_W1TS_REG    = (1UL << _keysightPin);
+  portENTER_CRITICAL_ISR(&g_mux);
+  if (!g_hasPeer && f.role != g_role && f.role != 0) {
+    memcpy(g_peerMac, mac, 6);
+    g_hasPeer = true;
   }
-  _lastTxMicros = micros();
-  esp_now_send(_bcastMac, (const uint8_t*)&pkt, sizeof(pkt));
+  g_rxPkts++;
+  portEXIT_CRITICAL_ISR(&g_mux);
+
+  ensurePeerAdded(mac);
+
+  if (g_role == 2) {
+    if (f.type == PKT_CMD) {
+      REG_WRITE(RTC_CNTL_STORE0_REG, f.s0);
+      handleMagicBits(f.s0);
+      sendEspNowFrame(PKT_TLM, f.txUs);
+    } else if (f.type == PKT_PING) {
+      sendEspNowFrame(PKT_PONG, f.txUs);
+    }
+  } else if (g_role == 1) {
+    if (f.type == PKT_TLM || f.type == PKT_PONG) {
+      uint32_t nowUs = micros();
+      if (g_role == 1) digitalWrite(WB_MASTER_RTT_PIN, LOW);
+      g_rttUs = nowUs - f.txUs;
+      if (f.type == PKT_TLM) {
+        REG_WRITE(RTC_CNTL_STORE1_REG, f.s1);
+        REG_WRITE(RTC_CNTL_STORE2_REG, f.s2);
+        REG_WRITE(RTC_CNTL_STORE3_REG, f.s3);
+        REG_WRITE(RTC_CNTL_STORE4_REG, f.s4);
+        g_syncPending = false;
+      }
+      g_pongWait = false;
+      g_lastTelemMs = millis();
+    }
+  }
 }
 
-static void _initEspNowSubsystem() {
-  if (esp_now_init() != ESP_OK) return;
-  esp_now_register_recv_cb(_onEspNowRecv);
-  esp_now_peer_info_t peerInfo = {};
-  memcpy(peerInfo.peer_addr, _bcastMac, 6);
-  peerInfo.channel = 1;
-  peerInfo.encrypt = false;
-  if (!esp_now_is_peer_exist(_bcastMac)) {
-    esp_now_add_peer(&peerInfo);
-  }
+static bool parseHexAddr(const String& tok, uint32_t& out) {
+  String s = tok;
+  s.trim();
+  if (s.startsWith("0x") || s.startsWith("0X")) s = s.substring(2);
+  if (s.length() == 0) return false;
+  char* endp = nullptr;
+  out = strtoul(s.c_str(), &endp, 16);
+  return (endp != s.c_str());
 }
 
-static String _bgExec(String line) {
-  line.trim();
-  if (line.length() == 0) return "";
+static String processCommand(const String& rawIn) {
+  String cmd = rawIn;
+  cmd.trim();
+  if (cmd.length() == 0) return "";
 
-  // 1. ATOMIC SINGLE-LINE TELEMETRY DUMP FOR MATLAB TEST SEQUENCE RECORDER
-  if (line == "TELEM" || line == "telem") {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "TELEM|%08X %08X %08X %08X %08X|RTT_US:%lu|RX:%lu",
-             *(volatile uint32_t*)0x3FF4804CUL,
-             *(volatile uint32_t*)0x3FF48050UL,
-             *(volatile uint32_t*)0x3FF48054UL,
-             *(volatile uint32_t*)0x3FF48058UL,
-             *(volatile uint32_t*)0x3FF4805CUL,
-             (unsigned long)_lastRttMicros,
-             (unsigned long)_espNowRxCount);
+  int sp = cmd.indexOf(' ');
+  String op = (sp < 0) ? cmd : cmd.substring(0, sp);
+  String rest = (sp < 0) ? "" : cmd.substring(sp + 1);
+  op.toUpperCase();
+  rest.trim();
+
+  if (op == "STATUS") {
+    char buf[196];
+    snprintf(buf, sizeof(buf), "ESP32_READY|ROLE:%s|UI:%s|ID:%s|IP:%s|MHZ:%u|PEER:%d",
+      roleName(g_role), (g_uiId == 1 ? "AGV" : "UDE"), WB_BUILD_ID,
+      WiFi.softAPIP().toString().c_str(), (unsigned)getCpuFrequencyMhz(), g_hasPeer ? 1 : 0);
     return String(buf);
   }
-
-  // 2. COMBINED WRITE-CMD + READ-TELEMETRY FOR WEB UI (Cut HTTP Requests in Half!)
-  if (line.startsWith("SYNC ") || line.startsWith("sync ")) {
-    uint32_t v = strtoul(line.substring(5).c_str(), NULL, 16);
-    *(volatile uint32_t*)0x3FF4804CUL = v;
-    if (_nodeRole == 1) _sendEspNowMasterBurst();
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%08X %08X %08X %08X",
-             *(volatile uint32_t*)0x3FF48050UL,
-             *(volatile uint32_t*)0x3FF48054UL,
-             *(volatile uint32_t*)0x3FF48058UL,
-             *(volatile uint32_t*)0x3FF4805CUL);
+  if (op == "INFO") {
+    char buf[220];
+    snprintf(buf, sizeof(buf), "ID:%s ROLE:%s HEAP_FREE:%u FLASH_MB:%u SKETCH_KB:%u OTA_FREE_KB:%u MHZ:%u",
+      WB_BUILD_ID, roleName(g_role), (unsigned)ESP.getFreeHeap(),
+      (unsigned)(ESP.getFlashChipSize() / 1048576u),
+      (unsigned)(ESP.getSketchSize() / 1024u),
+      (unsigned)(ESP.getFreeSketchSpace() / 1024u),
+      (unsigned)getCpuFrequencyMhz());
     return String(buf);
   }
-
-  if (line.startsWith("R ") || line.startsWith("r ") || line.startsWith("REG ") || line.startsWith("reg ")) {
-    int sp = line.indexOf(' ');
-    uint32_t a = strtoul(line.substring(sp + 1).c_str(), NULL, 16);
-    char b[16]; snprintf(b, sizeof(b), "0x%08X", *(volatile uint32_t*)a); return String(b);
+  if (op == "R" || op == "REG") {
+    uint32_t addr = 0;
+    if (!parseHexAddr(rest, addr) || (addr & 3) || addr < 0x3FF00000u || addr > 0x3FF80000u) return "ERR_ADDR";
+    uint32_t val = *reinterpret_cast<volatile uint32_t*>(static_cast<uintptr_t>(addr));
+    char out[12];
+    snprintf(out, sizeof(out), "%08X", (unsigned)val);
+    return String(out);
   }
-  if (line.startsWith("W ") || line.startsWith("w ")) {
-    int sp = line.indexOf(' ', 2);
-    uint32_t a = strtoul(line.substring(2, sp).c_str(), NULL, 16);
-    uint32_t v = strtoul(line.substring(sp + 1).c_str(), NULL, 16);
-    *(volatile uint32_t*)a = v;
-    if (a == 0x3FF4804CUL && _nodeRole == 1) {
-      _sendEspNowMasterBurst();
+  if (op == "W") {
+    int s2 = rest.indexOf(' ');
+    if (s2 < 0) return "ERR_ARGS";
+    uint32_t addr = 0, val = 0;
+    if (!parseHexAddr(rest.substring(0, s2), addr) || !parseHexAddr(rest.substring(s2 + 1), val)) return "ERR_HEX";
+    if ((addr & 3) || addr < 0x3FF00000u || addr > 0x3FF80000u) return "ERR_ADDR";
+    *reinterpret_cast<volatile uint32_t*>(static_cast<uintptr_t>(addr)) = val;
+    if (addr == RTC_CNTL_STORE0_REG) {
+      g_lastStore0 = val;
+      handleMagicBits(val);
+      if (g_role == 1) sendEspNowFrame(PKT_CMD);
     }
-    char b[16]; snprintf(b, sizeof(b), "0x%08X", *(volatile uint32_t*)a); return String(b);
+    uint32_t rb = *reinterpret_cast<volatile uint32_t*>(static_cast<uintptr_t>(addr));
+    char out[12];
+    snprintf(out, sizeof(out), "%08X", (unsigned)rb);
+    return String(out);
   }
-  if (line.startsWith("D ") || line.startsWith("d ")) {
-    int sp = line.indexOf(' ', 2);
-    uint32_t a = strtoul(line.substring(2, sp > 0 ? sp : line.length()).c_str(), NULL, 16);
-    int c = (sp > 0) ? line.substring(sp + 1).toInt() : 4;
-    if (c < 1) c = 1; if (c > 64) c = 64;
-    String out = ""; char b[16];
-    for (int i = 0; i < c; i++) {
-      snprintf(b, sizeof(b), "%08X", *(volatile uint32_t*)(a + i * 4));
-      if (i > 0) out += " "; out += b;
+  if (op == "D") {
+    int s2 = rest.indexOf(' ');
+    uint32_t addr = 0; int cnt = 8;
+    if (s2 < 0) {
+      if (!parseHexAddr(rest, addr)) return "ERR_ADDR";
+    } else {
+      if (!parseHexAddr(rest.substring(0, s2), addr)) return "ERR_ADDR";
+      cnt = constrain(rest.substring(s2 + 1).toInt(), 1, 64);
+    }
+    if ((addr & 3) || addr < 0x3FF00000u || addr > 0x3FF80000u) return "ERR_ADDR";
+    String out;
+    for (int i = 0; i < cnt; ++i) {
+      uint32_t v = *reinterpret_cast<volatile uint32_t*>(static_cast<uintptr_t>(addr + i * 4));
+      char h[12]; snprintf(h, sizeof(h), "%08X", (unsigned)v);
+      if (i > 0) out += ' ';
+      out += h;
     }
     return out;
   }
-  if (line.startsWith("UI ") || line.startsWith("ui ")) {
-    String sub = line.substring(3); sub.trim(); sub.toUpperCase();
-    if (sub == "AGV" || sub == "1") _activeUiPage = 1;
-    else if (sub == "UDE" || sub == "WORKBENCH" || sub == "0") _activeUiPage = 0;
-    return String("UI_PAGE:") + (_activeUiPage == 1 ? "AGV_COCKPIT" : "UDE_WORKBENCH");
-  }
-  if (line.startsWith("ROLE ") || line.startsWith("role ")) {
-    String sub = line.substring(5); sub.trim(); sub.toUpperCase();
-    if (sub == "MASTER" || sub == "1") _nodeRole = 1;
-    else if (sub == "SLAVE" || sub == "2") _nodeRole = 2;
-    else _nodeRole = 0;
-    return String("ROLE_SET:") + (_nodeRole == 1 ? "MASTER" : (_nodeRole == 2 ? "SLAVE" : "STANDALONE"));
-  }
-  if (line.startsWith("ESPNOW ") || line.startsWith("espnow ")) {
-    String sub = line.substring(7); sub.trim(); sub.toUpperCase();
-    if (sub == "BURST" || sub == "PING") {
-      uint32_t prevRx = _espNowRxCount;
-      _sendEspNowMasterBurst();
-      uint32_t tWait = micros();
-      while (_espNowRxCount == prevRx && (micros() - tWait < 8000)) {
+  if (op == "SYNC") {
+    uint32_t cmdWord = 0;
+    if (!parseHexAddr(rest, cmdWord)) return "ERR_HEX";
+    REG_WRITE(RTC_CNTL_STORE0_REG, cmdWord);
+    g_lastStore0 = cmdWord;
+    handleMagicBits(cmdWord);
+    if (g_role == 1) {
+      g_syncPending = true;
+      digitalWrite(WB_MASTER_RTT_PIN, HIGH);
+      sendEspNowFrame(PKT_CMD);
+      uint32_t t0 = micros();
+      while (g_syncPending && (micros() - t0) < 8000u) {
         delayMicroseconds(100);
       }
+      if (g_syncPending) {
+        digitalWrite(WB_MASTER_RTT_PIN, LOW);
+        g_lossPkts++;
+      }
     }
-    char macStr[24];
-    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-             _peerMac[0], _peerMac[1], _peerMac[2], _peerMac[3], _peerMac[4], _peerMac[5]);
-    return String("ESPNOW_STAT|ROLE:") + String(_nodeRole) +
-           "|CPU_MHZ:" + String(getCpuFrequencyMhz()) +
-           "|MY_MAC:" + WiFi.macAddress() +
-           "|PEER_MAC:" + String(macStr) +
-           "|TX:" + String(_espNowTxCount) +
-           "|RX:" + String(_espNowRxCount) +
-           "|RTT_US:" + String(_lastRttMicros);
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%08X %08X %08X %08X RTT_US:%u LOSS:%u",
+      (unsigned)REG_READ(RTC_CNTL_STORE1_REG), (unsigned)REG_READ(RTC_CNTL_STORE2_REG),
+      (unsigned)REG_READ(RTC_CNTL_STORE3_REG), (unsigned)REG_READ(RTC_CNTL_STORE4_REG),
+      (unsigned)g_rttUs, (unsigned)g_lossPkts);
+    return String(buf);
   }
-  if (line.startsWith("PIN ") || line.startsWith("pin ")) {
-    int sp = line.indexOf(' ', 4);
-    int p = (sp > 0) ? line.substring(4, sp).toInt() : line.substring(4).toInt();
-    String act = (sp > 0) ? line.substring(sp + 1) : "R"; act.trim(); act.toUpperCase();
-    if (act == "R" || act == "READ") { _enablePadInput(p); return String(digitalRead(p)); }
-    if (act == "IN" || act == "INPUT") { pinMode(p, INPUT); _enablePadInput(p); return String(digitalRead(p)); }
-    pinMode(p, OUTPUT); _enablePadInput(p);
-    uint32_t m = (1UL << p); *(volatile uint32_t*)GPIO_ENABLE_W1TS_REG = m;
-    if (act == "1" || act == "HIGH" || act == "ON") *(volatile uint32_t*)GPIO_OUT_W1TS_REG = m;
-    else if (act == "0" || act == "LOW" || act == "OFF") *(volatile uint32_t*)GPIO_OUT_W1TC_REG = m;
-    else if (act == "T" || act == "TOGGLE") {
-      if (*(volatile uint32_t*)GPIO_OUT_REG & m) *(volatile uint32_t*)GPIO_OUT_W1TC_REG = m;
-      else *(volatile uint32_t*)GPIO_OUT_W1TS_REG = m;
-    }
-    return String((*(volatile uint32_t*)GPIO_OUT_REG & m) ? 1 : 0);
+  if (op == "TELEM") {
+    char buf[120];
+    snprintf(buf, sizeof(buf), "%08X %08X %08X %08X %08X RTT_US:%u RX:%u LOSS:%u",
+      (unsigned)REG_READ(RTC_CNTL_STORE0_REG), (unsigned)REG_READ(RTC_CNTL_STORE1_REG),
+      (unsigned)REG_READ(RTC_CNTL_STORE2_REG), (unsigned)REG_READ(RTC_CNTL_STORE3_REG),
+      (unsigned)REG_READ(RTC_CNTL_STORE4_REG),
+      (unsigned)g_rttUs, (unsigned)g_rxPkts, (unsigned)g_lossPkts);
+    return String(buf);
   }
-  if (line.startsWith("DAC ") || line.startsWith("dac ")) {
-    int pin = 25, val = 0;
-    if (sscanf(line.c_str() + 4, "%d %d", &pin, &val) == 2 && (pin == 25 || pin == 26)) {
-      dacWrite(pin, constrain(val, 0, 255));
-      return String("DAC_OK|PIN:") + pin + "|VAL:" + constrain(val, 0, 255);
-    }
-    return "ERR|Use DAC 25 <0..255> or DAC 26 <0..255>";
+  if (op == "PIN") {
+    int s2 = rest.indexOf(' ');
+    int pin = (s2 < 0) ? rest.toInt() : rest.substring(0, s2).toInt();
+    String act = (s2 < 0) ? "READ" : rest.substring(s2 + 1);
+    act.trim(); act.toUpperCase();
+    if (pin < 0 || pin > 39) return "ERR_PIN";
+    if (act == "READ" || act == "R") return String(digitalRead(pin));
+    pinMode(pin, OUTPUT);
+    int val = digitalRead(pin);
+    if (act == "HIGH" || act == "1" || act == "ON") val = 1;
+    else if (act == "LOW" || act == "0" || act == "OFF") val = 0;
+    else val = !val;
+    digitalWrite(pin, val);
+    return String(val);
   }
-  if (line.startsWith("PWM ") || line.startsWith("pwm ")) {
-    int pin = 4, freq = 1000, duty = 512;
-    if (sscanf(line.c_str() + 4, "%d %d %d", &pin, &freq, &duty) == 3) {
-      if (freq <= 0 || duty < 0) { ledcDetach(pin); pinMode(pin, OUTPUT); digitalWrite(pin, LOW); return "PWM_OFF"; }
-      ledcAttach(pin, freq, 10); _enablePadInput(pin);
-      ledcWrite(pin, constrain(duty, 0, 1023));
-      return String("PWM_OK|PIN:") + pin + "|FREQ:" + freq + "|DUTY:" + constrain(duty, 0, 1023);
-    }
-    return "ERR|Use PWM <pin> <freq> <duty_0_1023>";
+  if (op == "ADC") {
+    int pin = rest.toInt();
+    analogReadResolution(12);
+    analogSetPinAttenuation(pin, ADC_11db);
+    return String(analogRead(pin));
   }
-  if (line.startsWith("PULSE ") || line.startsWith("pulse ")) {
-    int pin = 35; unsigned int timeoutUs = 50000;
-    sscanf(line.c_str() + 6, "%d %u", &pin, &timeoutUs);
-    return _measurePulse(pin, timeoutUs);
+  if (op == "DAC") {
+    int s2 = rest.indexOf(' ');
+    if (s2 < 0) return "ERR_ARGS";
+    int pin = rest.substring(0, s2).toInt();
+    int val = constrain(rest.substring(s2 + 1).toInt(), 0, 255);
+    dacWrite(pin, (uint8_t)val);
+    return "DAC_OK";
   }
-  if (line.startsWith("TOUCH ") || line.startsWith("touch ")) {
-    int pin = line.substring(6).toInt();
-    return String(touchRead(pin));
+  if (op == "PWM") {
+    int s2 = rest.indexOf(' ');
+    int s3 = (s2 < 0) ? -1 : rest.indexOf(' ', s2 + 1);
+    if (s2 < 0 || s3 < 0) return "ERR_ARGS";
+    int pin = rest.substring(0, s2).toInt();
+    long rawFreq = rest.substring(s2 + 1, s3).toInt();
+    uint32_t freq = (rawFreq <= 0) ? 0u : (uint32_t)rawFreq;
+    uint32_t duty = constrain(rest.substring(s3 + 1).toInt(), 0, 1023);
+    writeLedc((uint8_t)pin, 14, freq, 10, duty);
+    return "PWM_OK";
   }
-  if (line.startsWith("I2C ") || line.startsWith("i2c ")) {
-    String sub = line.substring(4); sub.trim(); sub.toUpperCase();
-    Wire.begin(21, 22, 100000);
-    if (sub == "SCAN") {
-      String found = "I2C_FOUND:"; int cnt = 0;
-      for (uint8_t a = 8; a < 120; a++) {
+  if (op == "PULSE") {
+    int s2 = rest.indexOf(' ');
+    int pin = (s2 < 0) ? rest.toInt() : rest.substring(0, s2).toInt();
+    uint32_t tout = (s2 < 0) ? 50000u : (uint32_t)max(1000L, rest.substring(s2 + 1).toInt());
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    if (ledcReadFreq((uint8_t)pin) == 0) pinMode(pin, INPUT);
+    else if (pin >= 0 && pin < SOC_GPIO_PIN_COUNT && GPIO_PIN_MUX_REG[pin]) PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[pin]);
+#else
+    pinMode(pin, INPUT);
+#endif
+    unsigned long hi = pulseIn(pin, HIGH, tout);
+    unsigned long lo = pulseIn(pin, LOW, tout);
+    unsigned long per = hi + lo;
+    float freq = (per > 0) ? (1000000.0f / (float)per) : 0.0f;
+    float duty = (per > 0) ? (100.0f * (float)hi / (float)per) : 0.0f;
+    char buf[72];
+    snprintf(buf, sizeof(buf), "FREQ_HZ:%.2f DUTY_PCT:%.2f HI_US:%lu LO_US:%lu", freq, duty, hi, lo);
+    return String(buf);
+  }
+  if (op == "TOUCH") return String(touchRead(rest.toInt()));
+  if (op == "I2C") {
+    rest.toUpperCase();
+    Wire.begin();
+    if (rest.startsWith("SCAN")) {
+      String found = "";
+      for (uint8_t a = 1; a < 127; ++a) {
         Wire.beginTransmission(a);
-        if (Wire.endTransmission() == 0) { char b[8]; snprintf(b, sizeof(b), "0x%02X ", a); found += b; cnt++; }
+        if (Wire.endTransmission() == 0) {
+          char h[8]; snprintf(h, sizeof(h), "0x%02X", a);
+          if (found.length() > 0) found += ',';
+          found += h;
+        }
       }
-      return cnt ? found : "I2C_FOUND:NONE";
+      return "I2C_FOUND:" + (found.length() ? found : String("NONE"));
     }
-    if (sub.startsWith("READ ")) {
-      unsigned int a = 0, r = 0, n = 1;
-      if (sscanf(sub.c_str() + 5, "%x %x %u", &a, &r, &n) >= 2) {
-        Wire.beginTransmission((uint8_t)a); Wire.write((uint8_t)r);
-        if (Wire.endTransmission(false) != 0) return "ERR|I2C_NACK";
-        Wire.requestFrom((uint8_t)a, (uint8_t)n); String out = "";
-        while (Wire.available()) { char b[8]; snprintf(b, sizeof(b), "0x%02X ", Wire.read()); out += b; }
-        out.trim(); return out;
+    if (rest.startsWith("READ")) {
+      int a, r, n = 1;
+      if (sscanf(rest.c_str(), "READ %i %i %i", &a, &r, &n) < 2) return "ERR_ARGS";
+      Wire.beginTransmission((uint8_t)a);
+      Wire.write((uint8_t)r);
+      Wire.endTransmission(false);
+      Wire.requestFrom((uint8_t)a, (uint8_t)constrain(n, 1, 16));
+      String out;
+      while (Wire.available()) {
+        char h[6]; snprintf(h, sizeof(h), "%02X ", Wire.read());
+        out += h;
+      }
+      out.trim();
+      return out.length() ? out : "ERR_NACK";
+    }
+    if (rest.startsWith("WRITE")) {
+      int a, r, v;
+      if (sscanf(rest.c_str(), "WRITE %i %i %i", &a, &r, &v) < 3) return "ERR_ARGS";
+      Wire.beginTransmission((uint8_t)a);
+      Wire.write((uint8_t)r);
+      Wire.write((uint8_t)v);
+      return (Wire.endTransmission() == 0) ? "I2C_WR_OK" : "ERR_NACK";
+    }
+    return "ERR_I2C_SUB";
+  }
+  if (op == "SPI") {
+    int cs = 5; unsigned tx = 0;
+    if (sscanf(rest.c_str(), "%d %i", &cs, (int*)&tx) < 2) return "ERR_ARGS";
+    pinMode(cs, OUTPUT);
+    digitalWrite(cs, HIGH);
+    SPI.begin();
+    SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(cs, LOW);
+    uint8_t rx = SPI.transfer((uint8_t)tx);
+    digitalWrite(cs, HIGH);
+    SPI.endTransaction();
+    char h[8]; snprintf(h, sizeof(h), "0x%02X", rx);
+    return String(h);
+  }
+  if (op == "BEEP") {
+    int pin = 4, freq = 1200, ms = 150;
+    sscanf(rest.c_str(), "%d %d %d", &pin, &freq, &ms);
+    writeLedc((uint8_t)pin, 15, (uint32_t)max(50, freq), 10, 512);
+    delay(constrain(ms, 10, 2000));
+    writeLedc((uint8_t)pin, 15, (uint32_t)max(50, freq), 10, 0);
+    return "BEEP_OK";
+  }
+  if (op == "UI") {
+    rest.toUpperCase();
+    g_uiId = (rest == "AGV") ? 1 : 0;
+    return (g_uiId == 1) ? "AGV_COCKPIT" : "UDE_WORKBENCH";
+  }
+  if (op == "ROLE") {
+    rest.toUpperCase();
+    if (rest == "MASTER") {
+      g_role = 1;
+      pinMode(WB_MASTER_RTT_PIN, OUTPUT);
+      digitalWrite(WB_MASTER_RTT_PIN, LOW);
+    } else if (rest == "SLAVE") {
+      g_role = 2;
+    } else {
+      g_role = 0;
+    }
+    return String("ROLE_OK:") + roleName(g_role);
+  }
+  if (op == "POWER") {
+    applyPowerProfile(rest);
+    return "POWER_OK:" + String(getCpuFrequencyMhz()) + "MHZ";
+  }
+  if (op == "ESPNOW") {
+    rest.toUpperCase();
+    if (rest == "PING") {
+      if (g_role == 1) {
+        g_pongWait = true;
+        g_pingTxUs = micros();
+        digitalWrite(WB_MASTER_RTT_PIN, HIGH);
+        sendEspNowFrame(PKT_PING, g_pingTxUs);
+        uint32_t t0 = millis();
+        while (g_pongWait && (millis() - t0) < 25u) { delay(1); }
+        if (g_pongWait) {
+          digitalWrite(WB_MASTER_RTT_PIN, LOW);
+          g_lossPkts++;
+        }
+      } else {
+        sendEspNowFrame(PKT_BEACON);
       }
     }
-    if (sub.startsWith("WRITE ")) {
-      unsigned int a = 0, r = 0, v = 0;
-      if (sscanf(sub.c_str() + 6, "%x %x %x", &a, &r, &v) == 3) {
-        Wire.beginTransmission((uint8_t)a); Wire.write((uint8_t)r); Wire.write((uint8_t)v);
-        return (Wire.endTransmission() == 0) ? "I2C_WRITE_OK" : "ERR|I2C_NACK";
-      }
-    }
-    return "ERR|Use I2C SCAN, I2C READ <addr> <reg> <n>, or I2C WRITE <addr> <reg> <val>";
+    char buf[112];
+    snprintf(buf, sizeof(buf), "ESPNOW_STAT ROLE:%s PEER:%d TX:%u RX:%u LOSS:%u RTT_US:%u",
+      roleName(g_role), g_hasPeer ? 1 : 0, (unsigned)g_txPkts, (unsigned)g_rxPkts,
+      (unsigned)g_lossPkts, (unsigned)g_rttUs);
+    return String(buf);
   }
-  if (line.startsWith("SPI ") || line.startsWith("spi ")) {
-    int cs = 5; unsigned int tx = 0;
-    if (sscanf(line.c_str() + 4, "%d %x", &cs, &tx) == 2) {
-      SPI.begin(18, 19, 23, cs); pinMode(cs, OUTPUT); digitalWrite(cs, LOW);
-      SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-      uint8_t rx = SPI.transfer((uint8_t)tx);
-      SPI.endTransaction(); digitalWrite(cs, HIGH);
-      char b[16]; snprintf(b, sizeof(b), "0x%02X", rx); return String(b);
-    }
-    return "ERR|Use SPI <cs_pin> <hex_byte>";
+  if (op == "OTA_PREP") {
+    g_otaArmed = true;
+    REG_WRITE(RTC_CNTL_STORE0_REG, 0x10000000u);
+    if (g_btUp) { g_bt.end(); g_btUp = false; }
+    return "OTA_PREP_OK";
   }
-  if (line.startsWith("BEEP ") || line.startsWith("beep ")) {
-    int s1 = line.indexOf(' ', 5); int s2 = line.indexOf(' ', s1 + 1);
-    int pin = line.substring(5, s1).toInt();
-    int freq = line.substring(s1 + 1, s2).toInt();
-    int dur = line.substring(s2 + 1).toInt();
-    tone(pin, freq, dur); return "BEEP_OK";
-  }
-  if (line.startsWith("ADC ") || line.startsWith("adc ")) return String(analogRead(line.substring(4).toInt()));
-  if (line == "OTA_PREP" || line == "ota_prep") {
-    if (_btActive) { _bgSerialBT.end(); btStop(); _btActive = false; }
-    return "OTA_PREP_OK|HEAP_FREE:" + String(ESP.getFreeHeap());
-  }
-  if (line == "INFO" || line == "info") {
-    const esp_partition_t* runPart = esp_ota_get_running_partition();
-    const esp_partition_t* nextPart = esp_ota_get_next_update_partition(NULL);
-    return String("FW_ID:") + _FW_BUILD_ID +
-           "|ROLE:" + (_nodeRole == 1 ? "MASTER" : (_nodeRole == 2 ? "SLAVE" : "STANDALONE")) +
-           "|CPU_MHZ:" + String(getCpuFrequencyMhz()) +
-           "|UI:" + (_activeUiPage == 1 ? "AGV" : "UDE") +
-           "|CORE:" + String(ESP.getSdkVersion()) +
-           "|RUN_PART:" + (runPart ? runPart->label : "?") +
-           "|NEXT_PART:" + (nextPart ? nextPart->label : "?") +
-           "|HEAP_FREE:" + String(ESP.getFreeHeap()) +
-           "|FLASH_MB:" + String(ESP.getFlashChipSize()/1048576) +
-           "|NEXT_OTA_MAX:" + String(nextPart ? nextPart->size : 0);
-  }
-  if (line == "STATUS" || line == "status") {
-    return String("ESP32_READY|FW_ID:") + _FW_BUILD_ID +
-           "|ROLE:" + (_nodeRole == 1 ? "MASTER" : (_nodeRole == 2 ? "SLAVE" : "STANDALONE")) +
-           "|UPTIME_MS:" + String(millis()) +
-           "|IP:" + (_apActive ? WiFi.softAPIP().toString() : String("0.0.0.0")) +
-           "|MAC:" + WiFi.macAddress() +
-           "|ESPNOW_RX:" + String(_espNowRxCount) +
-           "|RTT_US:" + String(_lastRttMicros) +
-           "|BT:" + (_btActive ? "ESP32_BT_BRIDGE" : "OFF") +
-           "|HEAP:" + String(ESP.getFreeHeap());
-  }
-  return "ERR";
+  return "ERR_CMD";
 }
 
-static void _bgTask(void* pv) {
-  esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
-  Serial.setTimeout(15); // Fast 15ms timeout so Serial never stalls HTTP or ESP-NOW
+static void setupHttpRoutes() {
+  g_http.on("/", HTTP_GET, []() {
+    g_http.send(200, "text/html; charset=utf-8", (g_uiId == 1) ? HTML_AGV_UI : HTML_UDE_UI);
+  });
+  g_http.on("/ude", HTTP_GET, []() {
+    g_http.send(200, "text/html; charset=utf-8", HTML_UDE_UI);
+  });
+  g_http.on("/agv", HTTP_GET, []() {
+    g_http.send(200, "text/html; charset=utf-8", HTML_AGV_UI);
+  });
+  g_http.on("/cmd", HTTP_GET, []() {
+    if (!g_http.hasArg("q")) { g_http.send(400, "text/plain", "ERR_NO_Q"); return; }
+    g_http.send(200, "text/plain", processCommand(g_http.arg("q")));
+  });
+  g_http.on("/ota", HTTP_POST,
+    []() {
+      bool ok = !Update.hasError();
+      g_http.send(ok ? 200 : 500, "text/plain", ok ? "OTA_OK" : "OTA_FAIL");
+      delay(250);
+      if (ok) ESP.restart();
+    },
+    []() {
+      HTTPUpload& up = g_http.upload();
+      if (up.status == UPLOAD_FILE_START) {
+        REG_WRITE(RTC_CNTL_STORE0_REG, 0x10000000u);
+        if (g_btUp) { g_bt.end(); g_btUp = false; }
+        Update.begin(UPDATE_SIZE_UNKNOWN);
+      } else if (up.status == UPLOAD_FILE_WRITE) {
+        Update.write(up.buf, up.currentSize);
+      } else if (up.status == UPLOAD_FILE_END) {
+        Update.end(true);
+      }
+    });
+}
 
-  if (_nodeRole == 2) {
-    setCpuFrequencyMhz(80);
+static void core0DaemonTask(void*) {
+  uint32_t lastBeaconMs = 0;
+  static String serBuf, btBuf;
+  for (;;) {
+    if (g_httpUp) g_http.handleClient();
+
+    while (Serial.available()) {
+      char c = (char)Serial.read();
+      if (c == '\n') {
+        String out = processCommand(serBuf);
+        serBuf = "";
+        if (out.length()) Serial.println(out);
+      } else if (c != '\r' && serBuf.length() < 256) {
+        serBuf += c;
+      }
+    }
+    while (g_btUp && g_bt.available()) {
+      char c = (char)g_bt.read();
+      if (c == '\n') {
+        String out = processCommand(btBuf);
+        btBuf = "";
+        if (out.length()) g_bt.println(out);
+      } else if (c != '\r' && btBuf.length() < 256) {
+        btBuf += c;
+      }
+    }
+    if ((g_role == 1 || g_role == 2) && !g_hasPeer && (millis() - lastBeaconMs) > 500u) {
+      lastBeaconMs = millis();
+      sendEspNowFrame(PKT_BEACON);
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+void setup() {
+  esp_log_level_set("*", ESP_LOG_NONE);
+  Serial.begin(115200);
+  Serial.setTimeout(25);
+  REG_WRITE(RTC_CNTL_STORE0_REG, 0x10000000u);
+
+  if (WB_NODE_ROLE == 1) {
+    pinMode(WB_MASTER_RTT_PIN, OUTPUT);
+    digitalWrite(WB_MASTER_RTT_PIN, LOW);
+  }
+
+  setupHttpRoutes();
+
+  if (g_role == 2) {
     WiFi.mode(WIFI_STA);
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    _btActive = false;
-    _apActive = false;
+    esp_wifi_set_channel(WB_ESPNOW_CH, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_ps(WIFI_PS_NONE);
   } else {
-    _bgSerialBT.begin("ESP32_BT_BRIDGE");
-    _btActive = true;
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP("ESP32_LAB", "12345678", 1);
-    WiFi.setSleep(false);
-    _apActive = true;
+    WiFi.softAP(WB_AP_SSID, WB_AP_PASS, WB_ESPNOW_CH);
+    g_http.begin();
+    g_httpUp = true;
+    g_bt.begin(WB_BT_NAME);
+    g_btUp = true;
   }
 
-  _initEspNowSubsystem();
-
-  _bgServer.enableCORS(true);
-  _bgServer.on("/", HTTP_GET, [](){
-    if (_bgServer.hasArg("json")) {
-      _bgServer.send(200, "application/json", "{\"status\":\"ESP32_READY\",\"fw_id\":\"" _FW_BUILD_ID "\",\"ip\":\"" + WiFi.softAPIP().toString() + "\"}");
-    } else if (_bgServer.hasArg("ui")) {
-      String u = _bgServer.arg("ui"); u.toLowerCase();
-      if (u == "agv") _activeUiPage = 1; else if (u == "ude") _activeUiPage = 0;
-      _bgServer.send_P(200, "text/html", (_activeUiPage == 1) ? _WEB_UI_AGV : _WEB_UI_UDE);
-    } else {
-      _bgServer.send_P(200, "text/html", (_activeUiPage == 1) ? _WEB_UI_AGV : _WEB_UI_UDE);
-    }
-  });
-  _bgServer.on("/ude", HTTP_GET, [](){ _activeUiPage = 0; _bgServer.send_P(200, "text/html", _WEB_UI_UDE); });
-  _bgServer.on("/agv", HTTP_GET, [](){ _activeUiPage = 1; _bgServer.send_P(200, "text/html", _WEB_UI_AGV); });
-  _bgServer.on("/switch", HTTP_GET, [](){
-    _activeUiPage = (_activeUiPage == 0) ? 1 : 0;
-    _bgServer.sendHeader("Location", "/");
-    _bgServer.send(302, "text/plain", "Switching UI template...");
-  });
-  _bgServer.on("/cmd", HTTP_GET, [](){
-    _bgServer.sendHeader("Connection", "close");
-    _bgServer.send(200, "text/plain", _bgExec(_bgServer.arg("q")));
-  });
-  _bgServer.on("/reg", HTTP_GET, [](){
-    uint32_t a = strtoul(_bgServer.arg("addr").c_str(), NULL, 16);
-    if (_bgServer.hasArg("val")) *(volatile uint32_t*)a = strtoul(_bgServer.arg("val").c_str(), NULL, 16);
-    char b[16]; snprintf(b, sizeof(b), "0x%08X", *(volatile uint32_t*)a);
-    _bgServer.send(200, "application/json", "{\"address\":\"" + _bgServer.arg("addr") + "\",\"value\":\"" + String(b) + "\"}");
-  });
-  _bgServer.on("/ota", HTTP_OPTIONS, [](){
-    _bgServer.sendHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    _bgServer.send(204);
-  });
-  _bgServer.on("/ota", HTTP_POST, [](){
-    bool ok = !Update.hasError();
-    _bgServer.sendHeader("Connection", "close");
-    _bgServer.send(ok ? 200 : 500, "text/plain", ok ? ("OTA_OK_REBOOTING|" _FW_BUILD_ID) : "OTA_FAIL");
-    _bgServer.client().flush();
-    delay(800);
-    _otaInProgress = false;
-    if (ok) ESP.restart();
-  }, [](){
-    HTTPUpload& u = _bgServer.upload();
-    if (u.status == UPLOAD_FILE_START) {
-      _otaInProgress = true; _otaWritten = 0;
-      if (_btActive) { _bgSerialBT.end(); btStop(); _btActive = false; }
-      Update.begin(UPDATE_SIZE_UNKNOWN);
-    } else if (u.status == UPLOAD_FILE_WRITE) {
-      Update.write(u.buf, u.currentSize);
-      _otaWritten += u.currentSize;
-      vTaskDelay(1);
-    } else if (u.status == UPLOAD_FILE_END) {
-      Update.end(true);
-    }
-  });
-  _bgServer.begin();
-
-  static String serialLine = "";
-  static String btLine = "";
-  uint32_t lastEspNowTick = millis();
-
-  for(;;) {
-    if (_apActive) {
-      _bgServer.handleClient();
-    }
-    if (!_otaInProgress) {
-      // Non-blocking character accumulator for UART0 Serial
-      while (Serial.available()) {
-        char c = (char)Serial.read();
-        if (c == '\n' || c == '\r') {
-          if (serialLine.length() > 0) {
-            String r = _bgExec(serialLine);
-            serialLine = "";
-            if (r.length() > 0) Serial.println(r);
-          }
-        } else if (serialLine.length() < 120) {
-          serialLine += c;
-        }
-      }
-      // Non-blocking character accumulator for Bluetooth SPP
-      while (_btActive && _bgSerialBT.available()) {
-        char c = (char)_bgSerialBT.read();
-        if (c == '\n' || c == '\r') {
-          if (btLine.length() > 0) {
-            String r = _bgExec(btLine);
-            btLine = "";
-            if (r.length() > 0) _bgSerialBT.println(r);
-          }
-        } else if (btLine.length() < 120) {
-          btLine += c;
-        }
-      }
-      uint32_t syncPeriodMs = (_btActive && _bgSerialBT.hasClient()) ? 50 : 25;
-      if (_nodeRole == 1 && (millis() - lastEspNowTick >= syncPeriodMs)) {
-        lastEspNowTick = millis();
-        _sendEspNowMasterBurst();
-      }
-      vTaskDelay(pdMS_TO_TICKS(1));
-    }
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(onEspNowRecv);
+    ensurePeerAdded(g_bcastMac);
   }
+
+  user_setup();
+  xTaskCreatePinnedToCore(core0DaemonTask, "wb_core0", 8192, nullptr, 2, nullptr, 0);
+  Serial.println("ESP32_READY");
 }
 
 {{USER_SKETCH_CODE}}
-
-void setup() {
-  Serial.begin(115200);
-  xTaskCreatePinnedToCore(_bgTask, "OTA_Core0", 12288, NULL, 2, NULL, 0);
-  user_setup();
-}

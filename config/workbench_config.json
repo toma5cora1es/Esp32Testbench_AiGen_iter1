@@ -1,0 +1,53 @@
+{
+  "project": {
+    "name": "ESP32 Unified Workbench & Green AGV Core",
+    "version": "2.0.0"
+  },
+  "toolchain": {
+    "arduinoCliBinary": "arduino-cli",
+    "arduinoCliSearchPaths": [
+      "C:\\Program Files\\Arduino CLI\\arduino-cli.exe",
+      "%LOCALAPPDATA%\\Programs\\Arduino CLI\\arduino-cli.exe"
+    ],
+    "fqbn": "esp32:esp32:esp32:PartitionScheme=min_spiffs",
+    "partitionScheme": "min_spiffs",
+    "maxAppBytes": 1966080,
+    "sdkPackagesRoot": "%LOCALAPPDATA%\\Arduino15\\packages\\esp32"
+  },
+  "transport": {
+    "serial": {
+      "defaultBaud": 115200,
+      "highSpeedBaud": 921600,
+      "connectTimeoutSec": 2.0,
+      "fastCmdTimeoutSec": 0.35,
+      "bootDrainWaitSec": 0.35
+    },
+    "wifi": {
+      "apSsid": "ESP32_LAB",
+      "apPassword": "12345678",
+      "apIp": "192.168.4.1",
+      "espNowChannel": 1,
+      "httpTimeoutSec": 4.0,
+      "otaTimeoutSec": 120,
+      "otaRebootSettleSec": 3.5,
+      "restoreHostWifiAfterOta": true
+    },
+    "bluetooth": {
+      "deviceName": "ESP32_BT_BRIDGE",
+      "rfcommChannel": 1,
+      "connectTimeoutSec": 3.0
+    }
+  },
+  "deploy": {
+    "defaultRole": "standalone",
+    "defaultUi": "auto",
+    "masterSketch": "esp32_sfr_core",
+    "slaveSketch": "green_agv_mainboard",
+    "standaloneSketch": "green_agv_mainboard"
+  },
+  "powerProfiles": {
+    "eco":      { "cpuMhz": 80,  "wifiPs": "min",  "btEnabled": false },
+    "balanced": { "cpuMhz": 160, "wifiPs": "none", "btEnabled": false },
+    "turbo":    { "cpuMhz": 240, "wifiPs": "none", "btEnabled": true  }
+  }
+}
