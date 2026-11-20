@@ -1,0 +1,5 @@
+*.asv
+*.bak
+results/*/*.json
+!results/*/.gitkeep
+firmware/build_last/

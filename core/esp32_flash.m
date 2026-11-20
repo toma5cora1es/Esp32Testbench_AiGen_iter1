@@ -1,331 +1,153 @@
 function [success, buildId] = esp32_flash(sketchOrPath, varargin)
-%ESP32_FLASH Manifest-driven 11-State Build & Deployment FSM (USB or Wi-Fi OTA).
-%   Resolves sketches by short-name (e.g. 'green_agv_mainboard') or path, injects config-driven
-%   macros + modular HTML templates via ui_manifest.json, compiles with arduino-cli, and flashes.
-    if nargin < 1 || isempty(sketchOrPath)
-        error('ESP32:FlashPath', 'Specify sketch name (e.g. green_agv_mainboard) or .ino/.bin path.');
-    end
-
-    cfg   = wb_config('workbench');
-    board = wb_config('board');
-    uiMan = wb_config('ui_manifest');
-
-    resolved = wb_paths('sketch', regexprep(strtrim(char(sketchOrPath)), '^["'']|["'']$', ''));
+%ESP32_FLASH Generic Build & Flash FSM.
+%   Zero project/pin hardcoding: pass optional '--board <name>' (injects macros from config/boards/*.json),
+%   '--ui-file <html_path>', '--radio <ap_now|sta_now|off>', '--role <standalone|master|slave>', '--bt'.
+    cfg = wb_config('workbench');
+    resolved = wb_paths('sketch', sketchOrPath);
     if isfolder(resolved)
-        [~, folderName] = fileparts(resolved);
-        cand = fullfile(resolved, [folderName '.ino']);
-        if isfile(cand), resolved = cand;
-        else
-            inos = dir(fullfile(resolved, '*.ino'));
-            if ~isempty(inos), resolved = fullfile(inos(1).folder, inos(1).name); end
-        end
+        [~, fn] = fileparts(resolved); cand = fullfile(resolved, [fn '.ino']);
+        if isfile(cand), resolved = cand; else, inos = dir(fullfile(resolved,'*.ino')); resolved = fullfile(inos(1).folder, inos(1).name); end
     end
-    if ~isfile(resolved)
-        error('ESP32:FileNotFound', 'Sketch or binary not found: %s', resolved);
-    end
+    if ~isfile(resolved), error('ESP32:NoSketch', 'Sketch not found: %s', resolved); end
 
     s = esp32_io('state');
-    mode = ''; target = '';
-    injectDaemon = true;
-    restoreWifiAfterOta = cfg.transport.wifi.restoreHostWifiAfterOta;
-    nodeRole = cfg.deploy.defaultRole;
-    uiTemplate = cfg.deploy.defaultUi;
+    mode = ''; target = ''; role = 'standalone'; radio = 'ap_now'; enableBt = false;
+    boardName = ''; customUiPath = ''; injectDaemon = true; restoreWifi = cfg.transport.wifi.restoreHostWifiAfterOta;
 
     i = 1;
     while i <= numel(varargin)
-        arg = regexprep(strtrim(char(varargin{i})), '^["'']|["'']$', '');
-        al = lower(arg);
-        if any(strcmp(al, {'--wifi', '-w', 'wifi'}))
-            mode = 'wifi';
-            if i < numel(varargin) && ~startsWith(char(varargin{i+1}), '-')
-                target = strtrim(char(varargin{i+1})); i = i + 1;
-            end
-        elseif any(strcmp(al, {'--usb', '-u', 'usb', 'serial'}))
-            mode = 'usb';
-            if i < numel(varargin) && ~startsWith(char(varargin{i+1}), '-')
-                target = upper(strtrim(char(varargin{i+1}))); i = i + 1;
-            end
-        elseif any(strcmp(al, {'--role', '-r'})) && i < numel(varargin)
-            nodeRole = lower(strtrim(char(varargin{i+1}))); i = i + 1;
-        elseif any(strcmp(al, {'--master', 'master'})), nodeRole = 'master';
-        elseif any(strcmp(al, {'--slave', 'slave'})),   nodeRole = 'slave';
-        elseif any(strcmp(al, {'--ui', '--html', '-h'})) && i < numel(varargin)
-            uiTemplate = lower(strtrim(char(varargin{i+1}))); i = i + 1;
-        elseif strcmp(al, '--raw'),       injectDaemon = false;
-        elseif strcmp(al, '--keep-wifi'), restoreWifiAfterOta = false;
-        elseif startsWith(upper(arg), 'COM') || startsWith(arg, '/dev/')
-            mode = 'usb'; target = upper(arg);
-        elseif ~isempty(regexp(arg, '^\d+\.\d+\.\d+\.\d+$', 'once'))
-            mode = 'wifi'; target = arg;
+        a = regexprep(strtrim(char(varargin{i})), '^["'']|["'']$', ''); al = lower(a);
+        if any(strcmp(al, {'--usb','-u','usb'})), mode='usb'; if i<numel(varargin)&&~startsWith(char(varargin{i+1}),'-'), target=upper(strtrim(char(varargin{i+1}))); i=i+1; end
+        elseif any(strcmp(al, {'--wifi','-w','wifi'})), mode='wifi'; if i<numel(varargin)&&~startsWith(char(varargin{i+1}),'-'), target=strtrim(char(varargin{i+1})); i=i+1; end
+        elseif strcmp(al, '--role') && i<numel(varargin), role=lower(strtrim(char(varargin{i+1}))); i=i+1;
+        elseif strcmp(al, '--radio') && i<numel(varargin), radio=lower(strtrim(char(varargin{i+1}))); i=i+1;
+        elseif strcmp(al, '--board') && i<numel(varargin), boardName=strtrim(char(varargin{i+1})); i=i+1;
+        elseif strcmp(al, '--ui-file') && i<numel(varargin), customUiPath=strtrim(char(varargin{i+1})); i=i+1;
+        elseif strcmp(al, '--bt'), enableBt = true;
+        elseif strcmp(al, '--no-bt'), enableBt = false;
+        elseif strcmp(al, '--keep-wifi'), restoreWifi = false;
+        elseif strcmp(al, '--raw'), injectDaemon = false;
+        elseif startsWith(upper(a),'COM') || startsWith(a,'/dev/'), mode='usb'; target=upper(a);
+        elseif ~isempty(regexp(a,'^\d+\.\d+\.\d+\.\d+$','once')), mode='wifi'; target=a;
         end
         i = i + 1;
     end
 
     if isempty(mode)
-        if strcmp(s.Mode, 'wifi'), mode = 'wifi'; target = s.Target;
-        elseif strcmp(s.Mode, 'serial'), mode = 'usb'; target = s.Target;
-        else, mode = 'wifi'; target = cfg.transport.wifi.apIp;
+        if strcmp(s.Mode,'wifi'), mode='wifi'; target=s.Target;
+        elseif strcmp(s.Mode,'serial'), mode='usb'; target=s.Target;
+        else, mode='usb'; target=esp32_io('detect_port');
         end
+    end
+    if isempty(target), target = iif(strcmp(mode,'wifi'), cfg.transport.wifi.apIp, esp32_io('detect_port')); end
+
+    [~, baseName, ext] = fileparts(resolved);
+    short = upper(regexprep(baseName, '[^a-zA-Z0-9]', ''));
+    if strlength(short) > 10, short = extractBefore(short, 11); end
+    buildId = sprintf('BLD_%s_%s', short, char(datetime('now','Format','HHmmss')));
+
+    buildRoot = wb_paths('buildTemp'); sketchDir = fullfile(buildRoot,'ota_sketch'); outBinDir = fullfile(buildRoot,'bin');
+    outIno = fullfile(sketchDir, 'ota_sketch.ino');
+    if isfolder(buildRoot), try rmdir(buildRoot,'s'); catch, end; end
+    mkdir(sketchDir); mkdir(outBinDir);
+
+    macroHdr = build_board_macro_header(boardName);
+    userCode = fileread(resolved);
+    if injectDaemon && strcmpi(ext, '.ino')
+        merged = build_daemon_sketch(userCode, macroHdr, buildId, role, radio, enableBt, cfg, customUiPath);
+        write_utf8(outIno, merged);
+    else
+        write_utf8(outIno, [macroHdr newline userCode]);
     end
 
     acli = esp32_io('find_cli');
-    if strcmp(mode, 'usb'), release_matlab_serial_ports(target); end
+    cmdCompile = sprintf('"%s" compile --fqbn %s --build-property "build.partitions=%s" --build-property "upload.maximum_size=%d" --output-dir "%s" "%s"', ...
+        acli, cfg.toolchain.fqbn, cfg.toolchain.partitionScheme, cfg.toolchain.maxAppBytes, outBinDir, sketchDir);
+    wb_log('fsm', 'FLASH', 'COMPILE', sprintf('%s | Role=%s | Radio=%s | BT=%d | ID=%s', baseName, upper(role), upper(radio), enableBt, buildId));
+    [st, cout] = system(cmdCompile);
+    if st ~= 0, fprintf(2, '%s\n', cout); error('ESP32:CompileFail', 'arduino-cli compile failed.'); end
+    binFile = fullfile(outBinDir, 'ota_sketch.ino.bin');
 
-    if isempty(target)
-        if strcmp(mode, 'wifi'), target = cfg.transport.wifi.apIp;
-        elseif strcmp(s.Mode, 'serial') && ~isempty(s.Target), target = s.Target;
-        else, target = esp32_io('detect_port');
+    if strcmp(mode, 'usb')
+        wasConn = strcmp(s.Mode,'serial') && strcmpi(s.Target, target);
+        if wasConn, esp32_io('disconnect'); end
+        try objs = serialportfind('Port', upper(string(target))); for k=1:numel(objs), delete(objs(k)); end; catch, end
+        wb_log('fsm', 'FLASH', 'USB_UPLOAD', target);
+        [st, uout] = system(sprintf('"%s" upload -p %s --fqbn %s --input-dir "%s"', acli, target, cfg.toolchain.fqbn, outBinDir));
+        if st ~= 0, fprintf(2, '%s\n', uout); error('ESP32:UploadFail', 'USB upload failed on %s.', target); end
+        pause(1.8);
+        if wasConn || ~strcmp(radio,'off'), esp32_io('connect', target); end
+    else
+        prevSsid = esp32_io('get_ssid');
+        if restoreWifi && ~isempty(prevSsid), g = onCleanup(@() esp32_io('restore_ssid', prevSsid)); end %#ok<NASGU>
+        if strcmp(target, cfg.transport.wifi.apIp), esp32_io('ensure_ap', target); end
+        try webread(sprintf('http://%s/cmd?q=OTA_PREP', target), weboptions('Timeout',3.0,'ContentType','text')); pause(0.25); catch, end
+        wb_log('fsm', 'FLASH', 'OTA_STREAM', sprintf('POST http://%s/ota', target));
+        [st, resp] = system(sprintf('curl.exe -s -S --http1.1 -H "Expect:" --connect-timeout 8 --max-time %d -F "image=@%s" http://%s/ota 2>&1', cfg.transport.wifi.otaTimeoutSec, binFile, target));
+        if st ~= 0 && ~contains(resp,'OTA_OK') && ~contains(resp,'Empty reply') && st ~= 52 && st ~= 56
+            error('ESP32:OtaFail', 'OTA failed: %s', strtrim(resp));
         end
+        pause(cfg.transport.wifi.otaRebootSettleSec);
     end
-
-    [~, sketchBaseName, ext] = fileparts(resolved);
-    if strcmp(uiTemplate, 'auto')
-        if contains(lower(sketchBaseName), 'agv'), uiTemplate = 'agv';
-        else, uiTemplate = 'ude';
-        end
-    end
-
-    shortName = upper(regexprep(sketchBaseName, '[^a-zA-Z0-9]', ''));
-    if strlength(shortName) > 10, shortName = extractBefore(shortName, 11); end
-    roleTag = upper(extractBefore([nodeRole '   '], 2));
-    buildId = sprintf('BLD_%s_%s_%s', shortName, roleTag, char(datetime('now', 'Format', 'HHmmss')));
-
-    buildRoot  = wb_paths('buildTemp');
-    sketchDir  = fullfile(buildRoot, 'ota_sketch');
-    outBinDir  = fullfile(buildRoot, 'bin');
-    outInoPath = fullfile(sketchDir, 'ota_sketch.ino');
-
-    ctx = struct( ...
-        'State','RESOLVE_INPUT','FilePath',resolved,'Ext',ext,'Mode',mode,'Target',target, ...
-        'NodeRole',nodeRole,'UiTemplate',uiTemplate,'InjectDaemon',injectDaemon, ...
-        'RestoreWifi',restoreWifiAfterOta,'PrevWifiSsid',esp32_io('get_ssid'), ...
-        'WasConnected',strcmp(s.Mode,'serial') && strcmpi(s.Target,target), ...
-        'BuildId',buildId,'BinFile','');
-
-    if strcmp(ctx.Mode, 'wifi') && ctx.RestoreWifi && ~isempty(ctx.PrevWifiSsid) && ~strcmpi(ctx.PrevWifiSsid, cfg.transport.wifi.apSsid)
-        wifiCleanup = onCleanup(@() esp32_io('restore_ssid', ctx.PrevWifiSsid)); %#ok<NASGU>
-    end
-
-    fqbn = cfg.toolchain.fqbn;
-    maxBytes = cfg.toolchain.maxAppBytes;
-    partScheme = cfg.toolchain.partitionScheme;
-
-    while ~ismember(ctx.State, {'FLASH_COMPLETE', 'FLASH_ABORTED'})
-        switch ctx.State
-            case 'RESOLVE_INPUT'
-                esp32_io('trace', 'esp32_flash.m', 'FSM: RESOLVE_INPUT', ...
-                    sprintf('Sketch=%s | Mode=%s | Target=%s | Role=%s | UI=%s | ID=%s', ...
-                    ctx.FilePath, upper(ctx.Mode), ctx.Target, upper(ctx.NodeRole), upper(ctx.UiTemplate), ctx.BuildId));
-
-                if strcmpi(ctx.Ext, '.ino')
-                    if isfolder(buildRoot), try rmdir(buildRoot, 's'); catch, end; end
-                    mkdir(sketchDir); mkdir(outBinDir);
-                    userCode = fileread(ctx.FilePath);
-                    if ctx.InjectDaemon
-                        ctx = step_fsm(ctx, 'INJECT_CORE0_DAEMON');
-                    else
-                        merged = inject_board_macros(userCode, board);
-                        write_utf8_no_bom(outInoPath, merged);
-                        ctx = step_fsm(ctx, 'COMPILE_ARDUINO_CLI');
-                    end
-                elseif strcmpi(ctx.Ext, '.bin')
-                    ctx.BinFile = ctx.FilePath;
-                    if strcmp(ctx.Mode, 'wifi'), ctx = step_fsm(ctx, 'WIFI_SNAPSHOT_AND_SWITCH');
-                    else, error('ESP32:BinUsbUnsupported', 'Pass .ino for USB upload or use --wifi for .bin.');
-                    end
-                else
-                    error('ESP32:UnsupportedExt', 'Unsupported extension: %s', ctx.Ext);
-                end
-
-            case 'INJECT_CORE0_DAEMON'
-                fprintf('[FLASH] Building %s [Role=%s | UI=%s | ID=%s]...\n', ...
-                    sketchBaseName, upper(ctx.NodeRole), upper(ctx.UiTemplate), ctx.BuildId);
-                mergedCode = assemble_firmware_from_manifest(fileread(ctx.FilePath), ctx.BuildId, ctx.NodeRole, ctx.UiTemplate, cfg, board, uiMan);
-                write_utf8_no_bom(outInoPath, mergedCode);
-                ctx = step_fsm(ctx, 'COMPILE_ARDUINO_CLI');
-
-            case 'COMPILE_ARDUINO_CLI'
-                compileCmd = sprintf('"%s" compile --fqbn %s --build-property "build.partitions=%s" --build-property "upload.maximum_size=%d" --output-dir "%s" "%s"', ...
-                    acli, fqbn, partScheme, maxBytes, outBinDir, sketchDir);
-                esp32_io('trace', 'esp32_flash.m', 'FSM: COMPILE_ARDUINO_CLI', compileCmd);
-                [status, cmdout] = system(compileCmd);
-                if status ~= 0
-                    fprintf(2, '%s\n', cmdout);
-                    ctx = step_fsm(ctx, 'FLASH_ABORTED');
-                    error('ESP32:CompileFailed', 'arduino-cli compilation failed.');
-                end
-                ctx.BinFile = fullfile(outBinDir, 'ota_sketch.ino.bin');
-                if strcmp(ctx.Mode, 'wifi'), ctx = step_fsm(ctx, 'WIFI_SNAPSHOT_AND_SWITCH');
-                else, ctx = step_fsm(ctx, 'USB_RELEASE_HANDLES');
-                end
-
-            case 'USB_RELEASE_HANDLES'
-                if ctx.WasConnected, esp32_io('disconnect'); end
-                release_matlab_serial_ports(ctx.Target);
-                ctx = step_fsm(ctx, 'USB_ESPTOOL_UPLOAD');
-
-            case 'USB_ESPTOOL_UPLOAD'
-                upCmd = sprintf('"%s" upload -p %s --fqbn %s --input-dir "%s"', acli, ctx.Target, fqbn, outBinDir);
-                esp32_io('trace', 'esp32_flash.m', 'FSM: USB_ESPTOOL_UPLOAD', upCmd);
-                fprintf('[FLASH] Flashing USB -> %s...\n', ctx.Target);
-                [status, cmdout] = system(upCmd);
-                if status ~= 0
-                    fprintf(2, '%s\n', cmdout);
-                    ctx = step_fsm(ctx, 'FLASH_ABORTED');
-                    error('ESP32:UsbUploadFailed', 'USB upload failed on %s.', ctx.Target);
-                end
-                ctx = step_fsm(ctx, 'USB_RECONNECT_SESSION');
-
-            case 'USB_RECONNECT_SESSION'
-                pause(2.0);
-                if ctx.WasConnected, esp32_io('connect', ctx.Target); end
-                ctx = step_fsm(ctx, 'FLASH_COMPLETE');
-
-            case 'WIFI_SNAPSHOT_AND_SWITCH'
-                if strcmp(ctx.Target, cfg.transport.wifi.apIp)
-                    esp32_io('ensure_ap', ctx.Target);
-                end
-                binInfo = dir(ctx.BinFile);
-                if binInfo.bytes > maxBytes
-                    ctx = step_fsm(ctx, 'FLASH_ABORTED');
-                    error('ESP32:BinaryTooLarge', 'Binary (%d B) exceeds %s limit (%d B).', binInfo.bytes, partScheme, maxBytes);
-                end
-                ctx = step_fsm(ctx, 'OTA_PREFLIGHT_PREP');
-
-            case 'OTA_PREFLIGHT_PREP'
-                try
-                    optsPrep = weboptions('Timeout', 3.0, 'ContentType', 'text');
-                    webread(sprintf('http://%s/cmd?q=OTA_PREP', ctx.Target), optsPrep);
-                    pause(0.25);
-                catch
-                end
-                ctx = step_fsm(ctx, 'OTA_CURL_MULTIPART');
-
-            case 'OTA_CURL_MULTIPART'
-                binInfo = dir(ctx.BinFile);
-                curlCmd = sprintf('curl.exe -s -S --http1.1 -H "Expect:" --connect-timeout 8 --max-time %d -F "image=@%s" http://%s/ota 2>&1', ...
-                    cfg.transport.wifi.otaTimeoutSec, ctx.BinFile, ctx.Target);
-                fprintf('[FLASH] Streaming %.2f MB via OTA -> http://%s/ota ...\n', binInfo.bytes/1e6, ctx.Target);
-                [status, resp] = system(curlCmd);
-                isRebootDrop = contains(resp, 'Empty reply') || contains(resp, 'Recv failure') || status == 52 || status == 56;
-                if status ~= 0 && ~contains(resp, 'OTA_OK') && ~isRebootDrop
-                    ctx = step_fsm(ctx, 'FLASH_ABORTED');
-                    error('ESP32:OtaFailed', 'Wi-Fi OTA failed: %s', strtrim(resp));
-                end
-                ctx = step_fsm(ctx, 'OTA_REBOOT_SETTLE');
-
-            case 'OTA_REBOOT_SETTLE'
-                pause(cfg.transport.wifi.otaRebootSettleSec);
-                if ctx.RestoreWifi, ctx = step_fsm(ctx, 'WIFI_RESTORE_HOST');
-                else
-                    if strcmp(ctx.Target, cfg.transport.wifi.apIp), esp32_io('ensure_ap', ctx.Target); end
-                    ctx = step_fsm(ctx, 'FLASH_COMPLETE');
-                end
-
-            case 'WIFI_RESTORE_HOST'
-                esp32_io('restore_ssid', ctx.PrevWifiSsid);
-                ctx = step_fsm(ctx, 'FLASH_COMPLETE');
-        end
-    end
-    success = strcmp(ctx.State, 'FLASH_COMPLETE');
-    fprintf('[FLASH] Done: Success=%d | BuildID=%s\n', success, ctx.BuildId);
+    success = true;
+    wb_log('pass', 'FLASH', 'COMPLETE', sprintf('BuildID=%s flashed via %s (%s)', buildId, upper(mode), target));
 end
 
-function ctx = step_fsm(ctx, nextState)
-    esp32_io('trace', 'esp32_flash.m', sprintf('FSM: %s -> %s', ctx.State, nextState), 'Deployment transition');
-    ctx.State = nextState;
+function hdr = build_board_macro_header(boardName)
+    hdr = '';
+    if isempty(boardName), return; end
+    b = wb_config('board', boardName);
+    if ~isfield(b, 'macros'), return; end
+    fns = fieldnames(b.macros);
+    lines = strings(numel(fns), 1);
+    for k = 1:numel(fns)
+        v = b.macros.(fns{k});
+        if isnumeric(v), vs = num2str(v); elseif islogical(v), vs = num2str(double(v)); else, vs = char(v); end
+        lines(k) = sprintf('#define %s %s', fns{k}, vs);
+    end
+    hdr = char(strjoin(lines, newline));
 end
 
-function merged = assemble_firmware_from_manifest(userCode, buildId, nodeRole, uiTemplate, cfg, board, uiMan)
-    if isempty(strtrim(userCode)), error('ESP32:EmptySketch', 'Empty .ino sketch.'); end
-    modifiedUser = regexprep(userCode, '\<void\s+setup\s*\(\s*(void)?\s*\)', 'void user_setup()', 'once');
-    if ~contains(modifiedUser, 'user_setup'), modifiedUser = [modifiedUser newline 'void user_setup() {}' newline]; end
-    if isempty(regexp(modifiedUser, '\<void\s+loop\s*\(\s*(void)?\s*\)', 'once'))
-        modifiedUser = [modifiedUser newline 'void loop() { delay(100); }' newline];
-    end
-    modifiedUser = inject_board_macros(modifiedUser, board);
+function merged = build_daemon_sketch(userCode, macroHdr, buildId, role, radio, enableBt, cfg, customUiPath)
+    modUser = regexprep(userCode, '\<void\s+setup\s*\(\s*(void)?\s*\)', 'void user_setup()', 'once');
+    if ~contains(modUser,'user_setup'), modUser = [modUser newline 'void user_setup() {}' newline]; end
+    if isempty(regexp(modUser,'\<\s*void\s+loop\s*\(\s*(void)?\s*\)','once')), modUser = [modUser newline 'void loop() { delay(100); }' newline]; end
 
-    daemonDir = wb_paths('daemon');
-    cppPath   = fullfile(daemonDir, uiMan.daemonSource);
-    udePath   = fullfile(daemonDir, uiMan.templates.ude.file);
-    agvPath   = fullfile(daemonDir, uiMan.templates.agv.file);
-    if ~isfile(cppPath) || ~isfile(udePath) || ~isfile(agvPath)
-        error('ESP32:MissingDaemonFiles', 'Daemon or HTML manifest files missing in %s', daemonDir);
-    end
-
-    udeHtml = strrep(fileread(udePath), '{{FW_BUILD_ID}}', char(buildId));
-    agvHtml = strrep(fileread(agvPath), '{{FW_BUILD_ID}}', char(buildId));
-    if contains(udeHtml, uiMan.rawDelimiterUde) || contains(agvHtml, uiMan.rawDelimiterAgv)
-        error('ESP32:RawDelimiterCollision', 'HTML content contains C++ raw string delimiter!');
+    dDir = wb_paths('daemon');
+    cpp  = fileread(fullfile(dDir, 'core0_daemon.cpp'));
+    udeHtml = strrep(fileread(fullfile(dDir, 'web_ui.html')), '{{FW_BUILD_ID}}', buildId);
+    appHtml = udeHtml; hasAppUi = '0';
+    if ~isempty(customUiPath)
+        cp = customUiPath;
+        if ~isfile(cp), cp = fullfile(wb_paths('root'), customUiPath); end
+        if ~isfile(cp), error('ESP32:NoUiFile', 'Custom UI HTML not found: %s', customUiPath); end
+        appHtml = strrep(fileread(cp), '{{FW_BUILD_ID}}', buildId);
+        hasAppUi = '1';
     end
 
     roleId = '0';
-    if strcmpi(nodeRole, 'master'), roleId = '1';
-    elseif strcmpi(nodeRole, 'slave'), roleId = '2';
-    end
-    uiId = num2str(uiMan.templates.ude.id);
-    if any(strcmpi(uiTemplate, {'agv', 'cockpit', '1'})), uiId = num2str(uiMan.templates.agv.id); end
+    if strcmpi(role,'master'), roleId = '1'; elseif strcmpi(role,'slave'), roleId = '2'; end
+    radioId = '0'; % 0=AP+ESP-NOW, 1=STA+ESP-NOW, 2=OFF(USB-only)
+    if strcmpi(radio,'sta_now') || strcmpi(role,'slave'), radioId = '1';
+    elseif strcmpi(radio,'off') || strcmpi(radio,'usb'), radioId = '2'; end
 
-    merged = fileread(cppPath);
     tokens = {
-        '{{FW_BUILD_ID}}',         char(buildId);
-        '{{NODE_ROLE_ID}}',        roleId;
-        '{{DEFAULT_UI_ID}}',       uiId;
-        '{{WB_AP_SSID}}',          cfg.transport.wifi.apSsid;
-        '{{WB_AP_PASS}}',          cfg.transport.wifi.apPassword;
-        '{{WB_BT_NAME}}',          cfg.transport.bluetooth.deviceName;
-        '{{WB_ESPNOW_CH}}',        num2str(cfg.transport.wifi.espNowChannel);
-        '{{WB_MASTER_RTT_PIN}}',   num2str(board.pins.masterRttStrobe);
-        uiMan.templates.ude.token, udeHtml;
-        uiMan.templates.agv.token, agvHtml;
-        '{{USER_SKETCH_CODE}}',    modifiedUser
+        '{{FW_BUILD_ID}}',       buildId;
+        '{{NODE_ROLE_ID}}',      roleId;
+        '{{RADIO_MODE_ID}}',     radioId;
+        '{{ENABLE_BT}}',         iif(enableBt,'1','0');
+        '{{HAS_APP_UI}}',        hasAppUi;
+        '{{WB_AP_SSID}}',        cfg.transport.wifi.apSsid;
+        '{{WB_AP_PASS}}',        cfg.transport.wifi.apPassword;
+        '{{WB_BT_NAME}}',        cfg.transport.bluetooth.deviceName;
+        '{{WB_ESPNOW_CH}}',      num2str(cfg.transport.wifi.espNowChannel);
+        '{{WEB_UI_UDE_HTML}}',   udeHtml;
+        '{{WEB_UI_APP_HTML}}',   appHtml;
+        '{{USER_SKETCH_CODE}}',  [macroHdr newline modUser]
     };
-    for k = 1:size(tokens, 1)
-        merged = strrep(merged, tokens{k,1}, tokens{k,2});
-    end
+    merged = cpp;
+    for k = 1:size(tokens,1), merged = strrep(merged, tokens{k,1}, tokens{k,2}); end
 end
 
-function txt = inject_board_macros(txt, board)
-    p = board.pins;
-    k = board.kinematics;
-    pairs = {
-        '{{PIN_MOT_L_A}}',   num2str(p.motorLeftA);
-        '{{PIN_MOT_L_B}}',   num2str(p.motorLeftB);
-        '{{PIN_MOT_R_A}}',   num2str(p.motorRightA);
-        '{{PIN_MOT_R_B}}',   num2str(p.motorRightB);
-        '{{PIN_ENC_L}}',     num2str(p.encoderLeft);
-        '{{PIN_ENC_R}}',     num2str(p.encoderRight);
-        '{{PIN_US_TRIG}}',   num2str(p.ultrasonicTrig);
-        '{{PIN_US_ECHO}}',   num2str(p.ultrasonicEcho);
-        '{{PIN_LINE_L}}',    num2str(p.lineSensorLeft);
-        '{{PIN_LINE_M}}',    num2str(p.lineSensorMid);
-        '{{PIN_LINE_R}}',    num2str(p.lineSensorRight);
-        '{{PIN_BTN_T1}}',    num2str(p.buttonT1);
-        '{{PIN_BTN_T2}}',    num2str(p.buttonT2);
-        '{{PIN_LED_F}}',     num2str(p.frontLights);
-        '{{PIN_LED_R}}',     num2str(p.rearLights);
-        '{{PIN_BUZZER}}',    num2str(p.buzzer);
-        '{{PWM_FREQ_HZ}}',   num2str(board.pwm.motorFreqHz);
-        '{{PWM_RES_BITS}}',  num2str(board.pwm.resolutionBits);
-        '{{WHEEL_DIAM_MM}}', sprintf('%.4ff', k.wheelDiameterMm);
-        '{{WHEEL_BASE_MM}}', sprintf('%.4ff', k.wheelBaseMm);
-        '{{TICKS_PER_REV}}', num2str(k.encoderTicksPerRev)
-    };
-    for idx = 1:size(pairs, 1)
-        txt = strrep(txt, pairs{idx,1}, pairs{idx,2});
-    end
-end
-
-function write_utf8_no_bom(fpath, content)
-    fid = fopen(fpath, 'w', 'n', 'UTF-8');
-    fwrite(fid, content, 'char');
-    fclose(fid);
-end
-
-function release_matlab_serial_ports(targetPort)
-    try
-        objs = serialportfind('Port', upper(string(targetPort)));
-        for k = 1:numel(objs), try delete(objs(k)); catch, end; end
-    catch
-    end
-end
+function write_utf8(p, txt), f=fopen(p,'w','n','UTF-8'); fwrite(f,txt,'char'); fclose(f); end
+function r = iif(c,a,b), if c, r=a; else, r=b; end; end

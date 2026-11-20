@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Green AGV Field Cockpit</title>
+<style>
+:root{--bg:#090d16;--pnl:#111827;--bd:#1f2937;--fg:#f3f4f6;--mut:#9ca3af;--acc:#06b6d4;--ok:#10b981}
+*{box-sizing:border-box;user-select:none;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden}
+.app{display:grid;height:100%;padding:8px;gap:8px;grid-template-rows:40px 1fr}
+.top{display:flex;justify-content:space-between;align-items:center;background:var(--pnl);border:1px solid var(--bd);border-radius:10px;padding:0 12px}
+.deck{display:grid;gap:8px;min-height:0}
+.card{background:var(--pnl);border:1px solid var(--bd);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.kpi{background:#0b1220;border:1px solid var(--bd);border-radius:8px;padding:6px;text-align:center}
+.kpi b{font-family:monospace;font-size:15px;color:var(--ok)}
+.btn{border:1px solid var(--bd);background:#1f2937;color:var(--fg);border-radius:10px;padding:10px;font-weight:700;cursor:pointer}
+.btn.estop{background:#b91c1c;color:#fff}.btn.on{background:#0284c7}
+.dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;flex:1}
+canvas{width:100%;flex:1;min-height:110px;background:#050811;border:1px solid var(--bd);border-radius:8px}
+@media(min-width:960px){.deck{grid-template-columns:1fr 1.3fr 1fr}}
+@media(max-width:959px) and (orientation:landscape){.deck{grid-template-columns:1fr 1.2fr 1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top"><strong style="color:var(--ok)">GREEN AGV FIELD COCKPIT</strong><div><span id="fsm" style="font-family:monospace;color:var(--acc)">IDLE</span> | <a href="/ude" style="color:#93c5fd">/ude</a></div></div>
+  <div class="deck">
+    <div class="card">
+      <div style="display:flex;gap:6px"><button class="btn" id="bFL" onclick="aux^=1;this.classList.toggle('on',aux&1)">Front LED</button><button class="btn" id="bRL" onclick="aux^=2;this.classList.toggle('on',aux&2)">Rear LED</button></div>
+      <div style="display:flex;gap:6px"><button class="btn" id="bPid" onclick="mode=(mode===2?1:2);this.classList.toggle('on',mode===2)">Line PID</button><button class="btn" onclick="magic=15;trail=[]">Zero Pose</button></div>
+      <div class="kpi"><small>LINE / US / ENC</small><br><b id="sen">000 | --mm | 0:0</b></div>
+    </div>
+    <div class="card">
+      <div class="kpis"><div class="kpi"><small>VEL</small><br><b id="vel">0 mm/s</b></div><div class="kpi"><small>POSE</small><br><b id="pos">0,0</b></div><div class="kpi"><small>HDG</small><br><b id="hdg">0°</b></div></div>
+      <canvas id="rad" width="320" height="190"></canvas>
+      <button class="btn estop" onclick="mode=0;cmdL=0;cmdR=0">E-STOP (SPACE)</button>
+    </div>
+    <div class="card">
+      <div class="dpad">
+        <div></div><button class="btn" onmousedown="drv(1,1)" onmouseup="drv(0,0)" onmouseleave="drv(0,0)" ontouchstart="drv(1,1)" ontouchend="drv(0,0)">FWD</button><div></div>
+        <button class="btn" onmousedown="drv(-1,1)" onmouseup="drv(0,0)" onmouseleave="drv(0,0)" ontouchstart="drv(-1,1)" ontouchend="drv(0,0)">LEFT</button>
+        <button class="btn" onclick="mode=1">MAN</button>
+        <button class="btn" onmousedown="drv(1,-1)" onmouseup="drv(0,0)" onmouseleave="drv(0,0)" ontouchstart="drv(1,-1)" ontouchend="drv(0,0)">RIGHT</button>
+        <div></div><button class="btn" onmousedown="drv(-1,-1)" onmouseup="drv(0,0)" onmouseleave="drv(0,0)" ontouchstart="drv(-1,-1)" ontouchend="drv(0,0)">REV</button><div></div>
+      </div>
+      <input type="range" min="25" max="100" value="70" oninput="spd=+this.value">
+    </div>
+  </div>
+</div>
+<script>
+let mode=1,aux=0,spd=70,cmdL=0,cmdR=0,magic=1,trail=[];
+function i16(v){return(v&0x8000)?(v-65536):v;}
+function drv(l,r){mode=1;cmdL=Math.round(l*spd);cmdR=Math.round(r*spd);}
+function pack(){const w=((magic<<28)|(mode<<24)|(aux<<16)|((cmdL&255)<<8)|(cmdR&255))>>>0;magic=1;return w.toString(16).toUpperCase().padStart(8,'0');}
+async function tick(){
+  try{
+    const t=await(await fetch('/cmd?q=SYNC%20'+pack())).text();
+    const m=t.match(/([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})/);
+    if(m){
+      const w1=parseInt(m[1],16)>>>0,w2=parseInt(m[2],16)>>>0,w3=parseInt(m[3],16)>>>0,w4=parseInt(m[4],16)>>>0;
+      const eL=i16(w1>>>16),eR=i16(w1&65535),us=w2>>>16,msk=(w2>>>8)&255,x=i16(w3>>>16),y=i16(w3&65535),th=i16(w4>>>16)/1000,v=i16(w4&65535);
+      vel.textContent=v+' mm/s'; pos.textContent=x+','+y; hdg.textContent=Math.round(th*57.3)+'°';
+      sen.textContent=(msk&7).toString(2).padStart(3,'0')+' | '+us+'mm | '+eL+':'+eR;
+      fsm.textContent=['E-STOP','MANUAL','LINE_PID','SLAM','HOLD'][w2&255]||'RUN';
+      trail.push([x,y]);if(trail.length>120)trail.shift();
+      const cv=rad,ctx=cv.getContext('2d'),cx=cv.width/2,cy=cv.height/2,sc=0.05;
+      ctx.fillStyle='#050811';ctx.fillRect(0,0,cv.width,cv.height);
+      ctx.strokeStyle='#0ea5e9';ctx.beginPath();trail.forEach((p,i)=>{i?ctx.lineTo(cx+p[0]*sc,cy-p[1]*sc):ctx.moveTo(cx+p[0]*sc,cy-p[1]*sc);});ctx.stroke();
+      ctx.fillStyle='#10b981';ctx.beginPath();ctx.arc(cx+x*sc,cy-y*sc,5,0,6.28);ctx.fill();
+    }
+  }catch(_){}
+  setTimeout(tick,80);
+}
+tick();
+</script>
+</body>
+</html>

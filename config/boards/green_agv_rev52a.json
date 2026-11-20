@@ -1,0 +1,43 @@
+{
+  "boardName": "Green AGV Rev 5.2a (Carinthia UAS)",
+  "registers": {
+    "commandWordSfr": "RTC_CNTL_STORE0_REG",
+    "telemetrySfrBase": "RTC_CNTL_STORE1_REG",
+    "telemetryWordCount": 4
+  },
+  "macros": {
+    "AGV_PIN_MOT_L_A": 13, "AGV_PIN_MOT_L_B": 12,
+    "AGV_PIN_MOT_R_A": 4,  "AGV_PIN_MOT_R_B": 2,
+    "AGV_PIN_ENC_L": 19,   "AGV_PIN_ENC_R": 18,
+    "AGV_PIN_US_TRIG": 27, "AGV_PIN_US_ECHO": 26,
+    "AGV_PIN_LINE_L": 34,  "AGV_PIN_LINE_M": 32, "AGV_PIN_LINE_R": 35,
+    "AGV_PIN_BTN_T1": 5,   "AGV_PIN_BTN_T2": 15, "AGV_BTN_ACT_LVL": "HIGH",
+    "AGV_PIN_LED_FL": 25,  "AGV_PIN_LED_FR": 33, "AGV_PIN_LED_RR": 14, "AGV_PIN_LED_RL": 23,
+    "AGV_PIN_BUZZER": 32,  "AGV_BUZZER_EN": 0,
+    "AGV_PWM_FREQ_HZ": 2000, "AGV_PWM_RES_BITS": 10,
+    "AGV_WHEEL_DIAM_MM": "65.0000f", "AGV_WHEEL_BASE_MM": "140.0000f", "AGV_TICKS_PER_REV": 20,
+    "SIM_LINE_L_OUT": 16, "SIM_LINE_M_OUT": 32, "SIM_LINE_R_OUT": 17,
+    "SIM_BTN_T1_OUT": 5,  "SIM_BTN_T2_OUT": 15,
+    "SIM_ENC_L_OUT": 19,  "SIM_ENC_R_OUT": 18,
+    "SIM_US_TRIG_IN": 27, "SIM_US_ECHO_OUT": 26,
+    "SIM_MOT_LA_IN": 13,  "SIM_MOT_LB_IN": 12, "SIM_MOT_RA_IN": 4, "SIM_MOT_RB_IN": 2,
+    "SIM_LED_FL_IN": 25,  "SIM_LED_FR_IN": 33, "SIM_LED_RR_IN": 14, "SIM_LED_RL_IN": 23
+  },
+  "pins": { "builtinLed": 2, "masterRttStrobe": 4, "vspiCs": 5 },
+  "adc1Channels": [
+    { "gpio": 36, "channel": "ADC1_CH0", "silkscreen": "VP / SVP (Pin 2)" },
+    { "gpio": 39, "channel": "ADC1_CH3", "silkscreen": "VN / SVN (Pin 3)" },
+    { "gpio": 34, "channel": "ADC1_CH6", "silkscreen": "D34 / SENS_L (Pin 4)" },
+    { "gpio": 35, "channel": "ADC1_CH7", "silkscreen": "D35 / SENS_R (Pin 5)" },
+    { "gpio": 32, "channel": "ADC1_CH4", "silkscreen": "D32 / SENS_M (Pin 6)" },
+    { "gpio": 33, "channel": "ADC1_CH5", "silkscreen": "D33 / LED3 (Pin 7)" }
+  ],
+  "touchPins": [
+    { "gpio": 32, "label": "D32 (TOUCH9)" }, { "gpio": 33, "label": "D33 (TOUCH8)" },
+    { "gpio": 27, "label": "D27 (TOUCH7)" }, { "gpio": 14, "label": "D14 (TOUCH6)" },
+    { "gpio": 12, "label": "D12 (TOUCH5)" }, { "gpio": 13, "label": "D13 (TOUCH4)" },
+    { "gpio": 15, "label": "D15 (TOUCH3)" }, { "gpio": 2,  "label": "D2  (TOUCH2)" },
+    { "gpio": 4,  "label": "D4  (TOUCH0)" }
+  ],
+  "kinematics": { "ultrasonicForwardOffsetMm": 95.0 }
+}
